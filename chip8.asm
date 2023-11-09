@@ -2,6 +2,8 @@ arch n64.cpu
 endian msb
 output "chip8.z64", create
 fill 1052672 // Set ROM Size
+origin $00000000
+base $A4000040 // Entry Point Of Code
 
 constant zero = 0
 constant at = 1
@@ -45,19 +47,31 @@ constant ch8_mem = gp
 constant CP0_RANDOM = 1
 constant CP0_COUNT = 9
 constant CP0_STATUS = 12
+constant CP0_CAUSE = 13
 
+constant MI_INTERRUPT = $a4300008
 constant MI_MASK = $a430000c
 constant VI_BASE = $a4400000
-constant VI_CTRL_OFFSET = 0
-constant VI_ORIGIN_OFFSET = 4
-constant VI_WIDTH_OFFSET  = 8
+constant VI_CTRL_OFFSET = $0
+constant VI_ORIGIN_OFFSET = $4
+constant VI_WIDTH_OFFSET = $8
+constant VI_V_INTR_OFFSET = $c
+constant VI_V_CURRENT_OFFSET = $10
+constant VI_BURST_OFFSET = $14
+constant VI_V_SYNC_OFFSET = $18
+constant VI_H_SYNC_OFFSET = $1c
+constant VI_H_SYNC_LEAP_OFFSET = $20
+constant VI_H_VIDEO_OFFSET = $24
+constant VI_V_VIDEO_OFFSET = $28
+constant VI_V_BURST_OFFSET = $2c
+
 constant VI_ORIGIN = VI_BASE + VI_ORIGIN_OFFSET
 
 constant CH8_FRAMEBUFFER_SIZE = 32*64
 constant N64_FRAMEBUFFER_START = 0
-constant ROM_START_INDEX = $200
+constant ROM_START_ADDR = $200
 constant FONTSET_SIZE = $50
-constant CYCLES_PER_UPDATE = 100
+constant CYCLES_PER_VSYNC = 2000
 
 main:
 	jal init_host
@@ -71,75 +85,119 @@ main_end:
 	nop
 
 init_host:  // void()
-	la t0, VI_BASE
-	ori t1, zero, $3303                // 8/8/8/8 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
-	sw t1, VI_CTRL_OFFSET(t0)
-	la t1, N64_FRAMEBUFFER_START
-	sw t1, VI_ORIGIN_OFFSET(t0)
-	ori t1, zero, 320
-	sw t1, VI_WIDTH_OFFSET(t0)
+	la      t0, VI_BASE
+	ori     t1, zero, $3303                // 8/8/8/8 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
+	sw      t1, VI_CTRL_OFFSET(t0)
+	la      t1, N64_FRAMEBUFFER_START
+	sw      t1, VI_ORIGIN_OFFSET(t0)
+	ori     t1, zero, 320
+	sw      t1, VI_WIDTH_OFFSET(t0)
+	li      t1, $3e52239                   // NTSC standard?
+	sw      t1, VI_BURST_OFFSET(t0)
+	ori     t1, zero, 525                  // NTSC, non-interlaced
+	sw      t1, VI_V_SYNC_OFFSET(t0)
+	li      t1, $150c15                    // NTSC standard?
+	sw      t1, VI_H_SYNC_OFFSET(t0)
+	sw      t1, VI_H_SYNC_LEAP_OFFSET(t0)
+	lui     t1, 108
+	ori     t1, t1, 748
+	sw      t1, VI_H_VIDEO_OFFSET(t0)
+	lui     t1, 37
+	ori     t1, t1, 511
+	sw      t1, VI_V_VIDEO_OFFSET(t0)
+	lui     t1, $e
+	ori     t1, t1, $204
+	sw      t1, VI_V_BURST_OFFSET(t0)
 
-	la t0, MI_MASK
-	ori t1, zero, $388                 // Enable PI, SI, VI interrupts
-	sw t1, 0(t0)
+	la      t0, MI_MASK
+	ori     t1, zero, $388                 // Enable PI, SI, VI interrupts
+	sw      t1, 0(t0)
 
-	jr ra
+	jal     install_exception_handlers
 	nop
+
+	jr      ra
+	nop
+
+install_exception_handlers:  // void()
+	li      t0, $80000180
+
+exception_handler_common:
+	mfc0    t0, CP0_CAUSE
+	nop
+	andi    t0, t0, $7c                    // extract exc_code
+	beq     t0, zero, interrupt_exception
+	nop                                    // TODO: handle remaining exceptions
+	eret
+interrupt_exception:
+	li      t0, MI_INTERRUPT
+	lw      t0, 0(t0)
+	andi    t1, t0, 8                      // VI interrupt flag
+	bnel    t1, zero, handle_vi_interrupt
+	nop
+	eret
+
+handle_vi_interrupt:  // void()
+	jal     poll_input
+	nop
+	jal     render
+	nop
+
 
 init_guest:  // void()
-	move	t0, ch8_mem
+	move    t0, ch8_mem // TODO: set ch8_mem
 
 	// load fontset
-	la t1, fontset
-	addiu t2, t1, FONTSET_SIZE
+	la      t1, fontset
+	addiu   t2, t1, FONTSET_SIZE
 fontset_loop_begin:
-	ld t3, 0(t1)
-	addiu t1, t1, 8
-	sd t3, 0(t0)
-	bne t1, t2, fontset_loop_begin
-	addiu t0, t0, 8
+	ld      t3, 0(t1)
+	addiu   t1, t1, 8
+	sd      t3, 0(t0)
+	bne     t1, t2, fontset_loop_begin
+	addiu   t0, t0, 8
 
-	// load rom
-	addiu t0, t0, ROM_START_INDEX
-	ori t1, zero, $1000
+	// load rom TODO
+	addiu   t0, ch8_mem, ROM_START_ADDR
+	ori     t1, zero, $1000
 
-	ori pc, zero, $200
-	move index, zero
-	move ch8_sp, zero
+	ori     pc, zero, $200
+	move    index, zero
+	move    ch8_sp, zero
 	
-	ori t0, zero, 60
-	la t1, delay_timer
-	sb t0, 0(t1)
-	la t1, sound_timer
-	sb t0, 0(t1)
+	ori     t0, zero, 60
+	la      t1, delay_timer
+	sb      t0, 0(t1)
+	la      t1, sound_timer
+	sb      t0, 0(t1)
 
 	// clear stack
-	la t0, stack
-	sd zero, 0(t0)
-	sd zero, 8(t0)
+	la      t0, stack
+	sd      zero, 0(t0)
+	sd      zero, 8(t0)
 
 	// clear key
-	la t0, key
-	sd zero, 0(t0)
-	sd zero, 8(t0)
+	la      t0, key
+	sd      zero, 0(t0)
+	sd      zero, 8(t0)
 
 	// clear v
-	sd zero, 0(v)
-	sd zero, 8(v)
+	la      v, v_data
+	sd      zero, 0(v)
+	sd      zero, 8(v)
 
-	j clear_display
+	j       clear_framebuffer
 	nop
 
-clear_display:  // void()
-	la t0, VI_ORIGIN
-	addiu t1, t0, CH8_FRAMEBUFFER_SIZE
-	move t2, zero
-clear_display_loop:
-	sd t2, 0(t0)
-	addiu t0, t0, 8
-	bnel t0, t1, clear_display_loop
+clear_framebuffer:  // void()
+	la      t0, ch8_framebuffer
+	addiu   t1, t0, CH8_FRAMEBUFFER_SIZE
+clear_framebuffer_loop:
+	sd      zero, 0(t0)
+	addiu   t0, t0, 8
+	bnel    t0, t1, clear_framebuffer_loop
 	nop
-	jr ra
+	jr      ra
 	nop
 
 inc_pc:  // void()
@@ -152,7 +210,7 @@ run:  // void()
 	sd       ra, 0(sp)
 	sd       s0, 8(sp)
 run_loop:
-	li       s0, CYCLES_PER_UPDATE
+	li       s0, CYCLES_PER_VSYNC
 step_cycle_loop:
 	jal      step_cycle
 	addiu    s0, s0, -1
@@ -167,20 +225,16 @@ update_delay_timer:
 update_sound_timer:
 	la       t0, sound_timer
 	lbu      t1, 0(t0)
-	beq      t1, zero, render_and_poll_input
+	beq      t1, zero, check_stop_run
 	addiu    t1, t1, -1
 	beq      t1, zero, play_audio
 	sb       t1, 0(t0)
-render_and_poll_input:
-	jal      render
-	nop
-	jal      poll_input
-	nop
-
+check_stop_run:
 	la       t0, do_run
 	lb       t0, 0(t0)
 	bnel     t0, zero, run_loop
 	nop
+stop_run:
 	ld       ra, 0(sp)
 	ld       s0, 8(sp)
 	jr       ra
@@ -213,7 +267,7 @@ decode_and_exec_instr:
 opcode_0nnn:  // void(hword opcode)
 	// 00E0; CLS -- Clear the display
 	ori     t0, zero, $e0
-	beq     t0, a0, clear_display
+	beq     t0, a0, clear_framebuffer
 	
 	// opcode != $00EE => panic
 	ori     t0, zero, $ee
@@ -538,35 +592,25 @@ opcode_Fxnn:  // void(hword opcode)
 	andi    t0, a0, $ff
 	srl     a0, a0, 8
 	andi    a0, a0, $f
-
 	ori     t1, zero, 7
 	beq     t0, t1, opcode_Fx07
-
 	ori     t1, zero, $a
 	beq     t0, t1, opcode_Fx0A
-	
 	ori     t1, zero, $15
 	beq     t0, t1, opcode_Fx15
-
 	ori     t1, zero, $18
 	beq     t0, t1, opcode_Fx18
-
 	ori     t1, zero, $1e
 	beq     t0, t1, opcode_Fx1E
-
 	ori     t1, zero, $29
 	beq     t0, t1, opcode_Fx29
-
 	ori     t1, zero, $33
 	beq     t0, t1, opcode_Fx33
-
 	ori     t1, zero, $55
 	beq     t0, t1, opcode_Fx55
-
 	ori     t1, zero, $65
 	beql    t0, t1, opcode_Fx65
 	nop
-
 	j       panic
 	nop
 
@@ -717,7 +761,7 @@ poll_input:  // void()
 	jr ra
 	nop
 
-await_input:  byte() -- returns the index of the next key pressed
+await_input:  // byte() -- returns the index of the next key pressed
 	jr ra
 	nop
 
