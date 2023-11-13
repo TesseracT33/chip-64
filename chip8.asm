@@ -1,42 +1,24 @@
 arch n64.cpu
 endian msb
-output "chip8.z64", create
-fill 1052672 // Set ROM Size
-origin $00000000
-base $A4000040 // Entry Point Of Code
+output "chip64.z64", create
 
-constant zero = 0
-constant at = 1
-constant v0 = 2
-constant v1 = 3
-constant a0 = 4
-constant a1 = 5
-constant a2 = 6
-constant a3 = 7
-constant t0 = 8
-constant t1 = 9
-constant t2 = 10
-constant t3 = 11
-constant t4 = 12
-constant t5 = 13
-constant t6 = 14
-constant t7 = 15
-constant s0 = 16
-constant s1 = 17
-constant s2 = 18
-constant s3 = 19
-constant s4 = 20
-constant s5 = 21
-constant s6 = 22
-constant s7 = 23
-constant t8 = 24
-constant t9 = 25
-constant k0 = 26
-constant k1 = 27
-constant gp = 28
-constant sp = 29
-constant fp = 30
-constant ra = 31
+// Execution starts in PIF ROM. Consequently, the first $1000 bytes of the cartridge has been copied to SP DMEM ($A4000000),
+// and execution continues at $A4000040. The $40 bytes skipped constitute the ROM header. The further $fc0 bytes is the boot code,
+// part of the N64 ROM. The boot code will perform a DMA of length $100000 bytes from $10001000 (N64 ROM offset $1000) to the address
+// specified in the header -- the word at byte offset 8. It will also write some code to the beginning of RDRAM before doing the DMA, 
+// so the entry point should not be $80000000. $80001000 seems to work well, also offsetting exactly the size of the header + boot code.  
+// After the DMA, the PC is set to this address.
+
+constant N64_ROM_SIZE = $100000
+fill N64_ROM_SIZE + $1000       // set rom size
+origin $0                       // rom location
+base $80000000                  // signed displacement against origin, used when computing the pc value for labels
+
+include "n64_header.asm"
+insert "n64_bootcode.bin"
+
+include "n64.inc"
+include "util.inc"
 
 constant pc = fp
 constant ch8_sp = t9
@@ -44,39 +26,22 @@ constant index = k0
 constant v = k1
 constant ch8_mem = gp
 
-constant CP0_RANDOM = 1
-constant CP0_COUNT = 9
-constant CP0_STATUS = 12
-constant CP0_CAUSE = 13
-
-constant MI_INTERRUPT = $a4300008
-constant MI_MASK = $a430000c
-constant VI_BASE = $a4400000
-constant VI_CTRL_OFFSET = $0
-constant VI_ORIGIN_OFFSET = $4
-constant VI_WIDTH_OFFSET = $8
-constant VI_V_INTR_OFFSET = $c
-constant VI_V_CURRENT_OFFSET = $10
-constant VI_BURST_OFFSET = $14
-constant VI_V_SYNC_OFFSET = $18
-constant VI_H_SYNC_OFFSET = $1c
-constant VI_H_SYNC_LEAP_OFFSET = $20
-constant VI_H_VIDEO_OFFSET = $24
-constant VI_V_VIDEO_OFFSET = $28
-constant VI_V_BURST_OFFSET = $2c
-
-constant VI_ORIGIN = VI_BASE + VI_ORIGIN_OFFSET
-
 constant CH8_FRAMEBUFFER_SIZE = 32*64
-constant N64_FRAMEBUFFER_START = 0
-constant ROM_START_ADDR = $200
-constant FONTSET_SIZE = $50
+constant CH8_MEM_SIZE = $1000
+constant CH8_ROM_START_ADDR = $200
 constant CYCLES_PER_VSYNC = 2000
+constant FONTSET_SIZE = $50
+constant MAX_CH8_ROM_SIZE = CH8_MEM_SIZE - CH8_ROM_START_ADDR
+constant RDRAM_FRAMEBUFFER_ADDR = RDRAM_ROM_ADDR + N64_ROM_SIZE
+constant RDRAM_ROM_ADDR = 0
+constant VI_V_SYNC_LINE = 2
+
+instr_begin:
 
 main:
-	jal init_host
+	jal init_n64
 	nop
-	jal init_guest
+	jal init_chip8
 	nop
 	jal run
 	nop
@@ -84,14 +49,22 @@ main_end:
 	j main_end
 	nop
 
-init_host:  // void()
-	la      t0, VI_BASE
+init_n64:  // void()
+	// init MI
+	lui     t0, MI_BASE
+	ori     t1, zero, $388                 // Enable PI, SI, VI interrupts
+	sw      t1, MI_MASK_OFFSET(t0)
+
+	// init VI
+	lui     t0, VI_BASE
 	ori     t1, zero, $3303                // 8/8/8/8 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
 	sw      t1, VI_CTRL_OFFSET(t0)
-	la      t1, N64_FRAMEBUFFER_START
+	li      t1, RDRAM_FRAMEBUFFER_ADDR
 	sw      t1, VI_ORIGIN_OFFSET(t0)
 	ori     t1, zero, 320
 	sw      t1, VI_WIDTH_OFFSET(t0)
+	ori     t1, zero, VI_V_SYNC_LINE
+	sw      t1, VI_V_INTR_OFFSET(t0)
 	li      t1, $3e52239                   // NTSC standard?
 	sw      t1, VI_BURST_OFFSET(t0)
 	ori     t1, zero, 525                  // NTSC, non-interlaced
@@ -109,79 +82,138 @@ init_host:  // void()
 	ori     t1, t1, $204
 	sw      t1, VI_V_BURST_OFFSET(t0)
 
-	la      t0, MI_MASK
-	ori     t1, zero, $388                 // Enable PI, SI, VI interrupts
-	sw      t1, 0(t0)
+	// enable interrupts
+	ori     t0, zero, $1400
+	mtc0    t0, CP0_STATUS                 // Set im2+im4 (enable MI and 'reset' interrupts)
 
-	jal     install_exception_handlers
+	// copy N64 ROM to RDRAM (skip header and boot code)
+	lui     t0, PI_BASE
+	ori     t1, zero, 3
+	sw      t1, PI_STATUS_OFFSET(t0)       // reset DMA controller and clear previous interrupt, if any
+	sw      zero, PI_DRAM_ADDR_OFFSET(t0)
+	ori     t2, zero, $1000                // offset rom header + boot code
+	sw      t2, PI_CART_ADDR_OFFSET(t0)
+	li      t2, N64_ROM_SIZE - 1
+	sw      t2, PI_WR_LEN_OFFSET(t0)
+await_pi_dma:
+	lw      t2, PI_STATUS_OFFSET(t0)
+	andi    t2, t2, 8
+	beql    t2, zero, await_pi_dma
+	nop
+	sw      t1, PI_STATUS_OFFSET(t0)
+
+	// cache instructions. The N64 i-cache is only 16 KiB but our code should be smaller than that
+	// assert(instr_end - instr_begin <= N64_ICACHE_SIZE)
+	la      t0, instr_begin
+	la      t1, instr_end
+cache_instrs_loop:
+	cache   $14, 0(t0)                      // Fill
+	addiu   t0, t0, N64_ICACHE_LINE_SIZE
+	subu    t2, t1, t0
+	bgtz    t2, cache_instrs_loop
 	nop
 
 	jr      ra
 	nop
 
-install_exception_handlers:  // void()
-	li      t0, $80000180
-
-exception_handler_common:
+exception_handler_180:  // void()
 	mfc0    t0, CP0_CAUSE
-	nop
-	andi    t0, t0, $7c                    // extract exc_code
-	beq     t0, zero, interrupt_exception
+	andi    t1, t0, $7c                    // extract exc_code
+	beq     t1, zero, handle_interrupt_exception
 	nop                                    // TODO: handle remaining exceptions
 	eret
-interrupt_exception:
-	li      t0, MI_INTERRUPT
-	lw      t0, 0(t0)
-	andi    t1, t0, 8                      // VI interrupt flag
-	bnel    t1, zero, handle_vi_interrupt
+handle_interrupt_exception:
+	addiu   sp, sp, -8
+	sd      ra, 0(sp)
+	andi    t1, t0, $400                   // read ip2
+	addiu   t1, t1, -$400
+	bgezall t1, handle_mi_interrupt
 	nop
+	andi    t1, t0, $1000                  // read ip4
+	addiu   t1, t1, -$1000
+	bgezall t1, handle_system_reset_interrupt
+	nop
+	ld      ra, 0(sp)
+	addiu   sp, sp, 8
 	eret
-
-handle_vi_interrupt:  // void()
-	jal     poll_input
+handle_mi_interrupt:
+	addiu   sp, sp, -8
+	sd      ra, 0(sp)
+	lui     t0, MI_BASE
+	lw      t0, MI_INTERRUPT_OFFSET(t0)
+	andi    t1, t0, 8                      // VI interrupt flag
+	addiu   t1, t1, -8
+	bgezall t1, handle_vi_interrupt
+	nop                                    // TODO: handle remaining exceptions
+	ld      ra, 0(sp)
+	addiu   sp, sp, 8
+	jr      ra
 	nop
+handle_system_reset_interrupt: // TODO
+	jr      ra
+	nop
+handle_vi_interrupt:
+	addiu   sp, sp, -8
+	sd      ra, 0(sp)
+	lui     t0, VI_BASE
+	ori     t1, zero, VI_V_SYNC_LINE
+	sw      t1, VI_V_CURRENT_OFFSET(t0)
 	jal     render
 	nop
+	ld      ra, 0(sp)
+	j       poll_input
+	addiu   sp, sp, 8
 
-
-init_guest:  // void()
-	move    t0, ch8_mem // TODO: set ch8_mem
+init_chip8:  // void()
+	la      ch8_mem, ch8_memory
+	
+	// clear memory
+	move    t0, ch8_mem
+	addiu   t1, t0, CH8_MEM_SIZE
+clear_ch8_memory_loop:
+	sd      zero, 0(t0)
+	addiu   t0, t0, 8
+	bnel    t0, t1, clear_ch8_memory_loop
+	nop
 
 	// load fontset
+	assert(FONTSET_SIZE % 8 == 0)
+	move    t0, ch8_mem
 	la      t1, fontset
-	addiu   t2, t1, FONTSET_SIZE
-fontset_loop_begin:
+	addiu   t2, t0, FONTSET_SIZE
+load_fontset_loop:
 	ld      t3, 0(t1)
-	addiu   t1, t1, 8
 	sd      t3, 0(t0)
-	bne     t1, t2, fontset_loop_begin
 	addiu   t0, t0, 8
+	bnel    t0, t2, load_fontset_loop
+	addiu   t1, t1, 8
 
-	// load rom TODO
-	addiu   t0, ch8_mem, ROM_START_ADDR
-	ori     t1, zero, $1000
+	// load rom
+	addiu   t0, ch8_mem, CH8_ROM_START_ADDR
+	la      t1, ch8_rom
+	addiu   t2, t0, CH8_ROM_SIZE
+load_rom_loop:
+	lb      t3, 0(t1)
+	sb      t3, 0(t0)
+	addiu   t0, t0, 1
+	bnel    t0, t2, load_rom_loop
+	addiu   t1, t1, 1
 
-	ori     pc, zero, $200
+	// init chip8 registers
+	ori     pc, zero, CH8_ROM_START_ADDR
 	move    index, zero
 	move    ch8_sp, zero
-	
 	ori     t0, zero, 60
 	la      t1, delay_timer
 	sb      t0, 0(t1)
 	la      t1, sound_timer
 	sb      t0, 0(t1)
-
-	// clear stack
 	la      t0, stack
 	sd      zero, 0(t0)
 	sd      zero, 8(t0)
-
-	// clear key
 	la      t0, key
 	sd      zero, 0(t0)
 	sd      zero, 8(t0)
-
-	// clear v
 	la      v, v_data
 	sd      zero, 0(v)
 	sd      zero, 8(v)
@@ -200,10 +232,92 @@ clear_framebuffer_loop:
 	jr      ra
 	nop
 
-inc_pc:  // void()
-	addiu    pc, pc, 2
-	jr       ra
-	andi     pc, pc, $fff
+poll_input:  // void()
+	// write to start of PIF RAM bytes 0-2, 7
+	// byte 0: command length (1)
+	// byte 1: result length (4)
+	// byte 2: command (1; Controller State)
+	// byte 7: signal end of commands ($fe)
+	lui     t0, $bfc0
+	li      t1, $01040100
+	sw      t1, $7c0(t0)
+	ori     t1, zero, $fe
+	sw      t1, $7c4(t0)
+
+	// write 1 to the PIF RAM control byte (offset $3f), triggering the joybus protocol
+	ori     t1, zero, 1
+	sw      t1, $7fc(t0)
+
+	// TODO: how long to wait before reading result?
+
+	// read the result (bytes 3-6), being the controller state. best to stick to aligned word reads here (?)
+	// byte 3: A B Z S dU dD dL dR
+	// byte 4: RST - LT RT cU cD cL cR
+	// byte 5: x-axis
+	// byte 6: y-axis
+	lw      t1, $7c0(t0)
+	lw      t2, $7c4(t0)
+	la      t3, key
+	andi    t4, t1, 1
+	sb      t4, 0(t3)   // dR
+	srl     t1, t1, 1
+	andi    t4, t1, 1
+	sb      t4, 1(t3)   // dL
+	srl     t1, t1, 1
+	andi    t4, t1, 1
+	sb      t4, 2(t3)   // dD
+	srl     t1, t1, 2
+	andi    t4, t1, 1
+	sb      t4, 3(t3)   // dU
+	srl     t1, t1, 1
+	andi    t4, t1, 1
+	sb      t4, 4(t3)   // S
+	srl     t1, t1, 1
+	andi    t4, t1, 1
+	sb      t4, 5(t3)   // Z
+	srl     t1, t1, 1
+	andi    t4, t1, 1
+	sb      t4, 6(t3)   // B
+	srl     t1, t1, 1
+	andi    t4, t1, 1
+	sb      t4, 7(t3)   // A
+	srl     t2, t2, 24
+	andi    t4, t2, 1
+	sb      t4, 8(t3)   // cR
+	srl     t2, t2, 1
+	andi    t4, t2, 1
+	sb      t4, 9(t3)   // cL
+	srl     t2, t2, 1
+	andi    t4, t2, 1
+	sb      t4, 10(t3)   // cD
+	srl     t2, t2, 1
+	andi    t4, t2, 1
+	sb      t4, 11(t3)   // cU
+	srl     t2, t2, 1
+	andi    t4, t2, 1
+	sb      t4, 12(t3)   // RT
+	srl     t2, t2, 1
+	andi    t4, t2, 1
+	sb      t4, 13(t3)   // LT
+	jr      ra
+	nop
+
+await_input:  // byte() -- returns the index of the next key pressed
+	jr      ra
+	nop
+
+render:  // void()
+	la      t0, ch8_framebuffer
+	li      t1, RDRAM_FRAMEBUFFER_ADDR
+	addiu   t2, t0, CH8_FRAMEBUFFER_SIZE
+render_loop:
+	lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff'ffff for 8/8/8/8
+	sw      t3, 0(t1)
+	addiu   t0, t0, 1
+	bnel    t0, t2, render_loop
+	addiu   t1, t1, 4
+	jr      ra
+	nop
 
 run:  // void()
 	addiu    sp, sp, -16
@@ -225,10 +339,17 @@ update_delay_timer:
 update_sound_timer:
 	la       t0, sound_timer
 	lbu      t1, 0(t0)
-	beq      t1, zero, check_stop_run
+	beq      t1, zero, await_v_sync
 	addiu    t1, t1, -1
-	beq      t1, zero, play_audio
+	addiu    t2, t1, -1
+	bltzal   t2, play_audio
 	sb       t1, 0(t0)
+await_v_sync:
+	la       t0, got_v_sync
+	lb       t1, 0(t0)
+	beq      t1, zero, await_v_sync
+	nop
+	sb       zero, 0(t0)
 check_stop_run:
 	la       t0, do_run
 	lb       t0, 0(t0)
@@ -375,105 +496,103 @@ opcode_8xyn:  // void(hword opcode)
 
 // LD Vx, Vy -- Set Vx = Vy
 opcode_8xy0:  // void(word &Vx, word &Vy)
-	lb     t0, 0(a1)
-	jr     ra
-	sb     t0, 0(a0)
+	lb      t0, 0(a1)
+	jr      ra
+	sb      t0, 0(a0)
 
 // OR Vx, Vy -- Set Vx = Vx OR Vy
 opcode_8xy1:  // void(word &Vx, word &Vy)
-	lb     t0, 0(a0)
-	lb     t1, 0(a1)
-	or     t0, t0, t1
-	jr     ra
-	sb     t0, 0(a0)
+	lb      t0, 0(a0)
+	lb      t1, 0(a1)
+	or      t0, t0, t1
+	jr      ra
+	sb      t0, 0(a0)
 
 // AND Vx, Vy -- Set Vx = Vx AND Vy
 opcode_8xy2:  // void(word &Vx, word &Vy)
-	lb     t0, 0(a0)
-	lb     t1, 0(a1)
-	and    t0, t0, t1
-	jr     ra
-	sb     t0, 0(a0)
+	lb      t0, 0(a0)
+	lb      t1, 0(a1)
+	and     t0, t0, t1
+	jr      ra
+	sb      t0, 0(a0)
 
 // XOR Vx, Vy -- Set Vx = Vx XOR Vy
 opcode_8xy3:  // void(word &Vx, word &Vy)
-	lb     t0, 0(a0)
-	lb     t1, 0(a1)
-	xor    t0, t0, t1
-	jr     ra
-	sb     t0, 0(a0)
+	lb      t0, 0(a0)
+	lb      t1, 0(a1)
+	xor     t0, t0, t1
+	jr      ra
+	sb      t0, 0(a0)
 
 // ADD Vx, Vy -- Set Vx = Vx + Vy, and set VF = carry
 opcode_8xy4:  // void(word &Vx, word &Vy)
-	lbu    t0, 0(a0)
-	lbu    t1, 0(a1)
-	addu   t0, t0, t1
-	sb     t0, 0(a0)
-	srl    t0, t0, 8
-	jr     ra
-	sb     t0, $f(v)
+	lbu     t0, 0(a0)
+	lbu     t1, 0(a1)
+	addu    t0, t0, t1
+	sb      t0, 0(a0)
+	srl     t0, t0, 8
+	jr      ra
+	sb      t0, $f(v)
 
 // SUB Vx, Vy -- Set Vx = Vx - Vy, and set VF = NOT borrow
 opcode_8xy5:  // void(word &Vx, word &Vy)
-	lbu    t0, 0(a0)
-	lbu    t1, 0(a1)
-	subu   t0, t0, t1
-	sb     t0, 0(a0)
-	addiu  t1, zero, -1
-	slt    t1, t1, t0
-	jr     ra
-	sb     t1, $f(v)
+	lbu     t0, 0(a0)
+	lbu     t1, 0(a1)
+	subu    t0, t0, t1
+	sb      t0, 0(a0)
+	addiu   t1, zero, -1
+	slt     t1, t1, t0
+	jr      ra
+	sb      t1, $f(v)
 
 // SHR Vx {, Vy} -- Set VF to the LSB of Vy, and set Vx = Vy SHR 1
 opcode_8xy6:  // void(word &Vx, word &Vy)
-	lbu    t0, 0(a1)
-	andi   t1, t0, 1
-	sb     t1, $f(v)
-	srl    t0, t0, 1
-	jr     ra
-	sb     t0, 0(a0)
+	lbu     t0, 0(a1)
+	andi    t1, t0, 1
+	sb      t1, $f(v)
+	srl     t0, t0, 1
+	jr      ra
+	sb      t0, 0(a0)
 
 // SUBN Vx, Vy -- Set Vx = Vy - Vx, and set VF = NOT borrow
 opcode_8xy7:  // void(word &Vx, word &Vy)
-	lbu    t0, 0(a0)
-	lbu    t1, 0(a1)
-	subu   t0, t1, t0
-	sb     t0, 0(a0)
-	addiu  t1, zero, -1
-	slt    t1, t1, t0
-	jr     ra
-	sb     t1, $f(v)
+	lbu     t0, 0(a0)
+	lbu     t1, 0(a1)
+	subu    t0, t1, t0
+	sb      t0, 0(a0)
+	addiu   t1, zero, -1
+	slt     t1, t1, t0
+	jr      ra
+	sb      t1, $f(v)
 
 // SHL Vx {, Vy} -- Set VF to the MSB of Vy, and set Vx = Vy SHL 1. 
 opcode_8xyE:  // void(word &Vx, word &Vy)
-	lbu    t0, 0(a1)
-	srl    t1, t0, 7
-	sb     t1, $f(v)
-	sll    t0, t0, 1
-	jr     ra
-	sb     t0, 0(a0)
+	lbu     t0, 0(a1)
+	srl     t1, t0, 7
+	sb      t1, $f(v)
+	sll     t0, t0, 1
+	jr      ra
+	sb      t0, 0(a0)
 
 // Skip the next instruction if Vx != Vy
 opcode_9xy0:  // void(hword opcode)
-	// Get Vx, Vy
-	srl t0, a0, 8
-	andi t0, t0, $f
-	addu t0, t0, v
-	lbu t0, 0(t0)
-	srl t1, a0, 4
-	andi t1, t1, $f
-	addu t1, t1, v
-	lbu t1, 0(t1)
-
-	bnel t0, t1, inc_pc
+	srl     t0, a0, 8
+	andi    t0, t0, $f
+	addu    t0, t0, v
+	lbu     t0, 0(t0)
+	srl     t1, a0, 4
+	andi    t1, t1, $f
+	addu    t1, t1, v
+	lbu     t1, 0(t1)
+	bnel    t0, t1, inc_pc
 	nop
-	jr ra
+	jr      ra
 	nop
 
 // Set I = nnn
 opcode_Annn:  // void(hword opcode)
-	jr ra
-	andi index, a0, $fff
+	jr      ra
+	andi    index, a0, $fff
 
 // Jump to nnn + V0
 opcode_Bnnn:  // void(hword opcode)
@@ -485,10 +604,8 @@ opcode_Bnnn:  // void(hword opcode)
 // RND Vx, byte -- Set Vx = random byte AND nn
 opcode_Cxnn:  // void(hword opcode)
 	mfc0    t0, CP0_RANDOM
-	nop
 	sll     t0, t0, 3
 	mfc0    t1, CP0_COUNT
-	nop
 	andi    t1, t1, 7
 	or      t0, t0, t1
 	and     t0, t0, a0
@@ -499,58 +616,58 @@ opcode_Cxnn:  // void(hword opcode)
 	sb      t0, 0(t1)
 
 opcode_Dxyn:  // void(hword opcode)
-	srl    t0, a0, 8
-	andi   t0, t0, $f
-	addu   t0, t0, v
-	lbu    t0, 0(t0)
-	andi   t0, t0, 63 // vx
-	srl    t1, a0, 4
-	andi   t1, t1, $f
-	addu   t1, t1, v
-	lbu    t1, 0(t1)
-	andi   t1, t1, 31  // y
-	la     a0, ch8_framebuffer
-	ori    a1, zero, $80
-	sb     zero, $f(v)
-	andi   t2, a0, $f // height
-	addu   t2, t2, t1 // ymax
-	slti   t3, t2, 33
-	bnel   t3, zero, calc_width
-	ori    t2, zero, 32
+	srl     t0, a0, 8
+	andi    t0, t0, $f
+	addu    t0, t0, v
+	lbu     t0, 0(t0)
+	andi    t0, t0, 63 // vx
+	srl     t1, a0, 4
+	andi    t1, t1, $f
+	addu    t1, t1, v
+	lbu     t1, 0(t1)
+	andi    t1, t1, 31  // y
+	la      a0, ch8_framebuffer
+	ori     a1, zero, $80
+	sb      zero, $f(v)
+	andi    t2, a0, $f // height
+	addu    t2, t2, t1 // ymax
+	slti    t3, t2, 33
+	bnel    t3, zero, calc_width
+	ori     t2, zero, 32
 calc_width:
-	ori    t3, zero, 64
-	subu   t3, t3, t0
-	slti   t4, t3, 8
-	bnel   t4, zero, draw_loop_begin
-	ori    t3, zero, 8 // sprite width
+	ori     t3, zero, 64
+	subu    t3, t3, t0
+	slti    t4, t3, 8
+	bnel    t4, zero, draw_loop_begin
+	ori     t3, zero, 8 // sprite width
 draw_loop_begin:
-	addiu  t4, ch8_mem, index
-	addiu  index, index, 1
-	lbu    t4, 0(t4)  // x-strip
-	sll    t5, t1, 6
-	addu   t5, t5, t0 // framebuffer pos
-	move   t6, zero   // xline
+	addiu   t4, ch8_mem, index
+	addiu   index, index, 1
+	lbu     t4, 0(t4)  // x-strip
+	sll     t5, t1, 6
+	addu    t5, t5, t0 // framebuffer pos
+	move    t6, zero   // xline
 draw_strip_begin:
-	srlv   t7, a1, t6
-	and    t7, t7, t4
-	beq    t7, zero, draw_pixel_end
-	addu   t7, a0, t5
-	lbu    t8, 0(t7)
-	beq    t8, zero, draw_pixel
-	ori    t9, zero, 1
-	sb     t9, $f(v)
+	srlv    t7, a1, t6
+	and     t7, t7, t4
+	beq     t7, zero, draw_pixel_end
+	addu    t7, a0, t5
+	lbu     t8, 0(t7)
+	beq     t8, zero, draw_pixel
+	ori     t9, zero, 1
+	sb      t9, $f(v)
 draw_pixel:
-	xori   t8, t8, $ff
-	sb     t8, 0(t7)
+	xori    t8, t8, $ff
+	sb      t8, 0(t7)
 draw_pixel_end:
-	addiu  t6, t6, 1
-	bnel   t6, t3, draw_strip_begin
-	addiu  t5, t5, 1
+	addiu   t6, t6, 1
+	bnel    t6, t3, draw_strip_begin
+	addiu   t5, t5, 1
 draw_strip_end:
-	addiu  t1, t1, 1
-	bne    t1, t2, draw_loop_begin
-	andi   index, index, $fff
-	jr     ra
+	addiu   t1, t1, 1
+	bne     t1, t2, draw_loop_begin
+	andi    index, index, $fff
+	jr      ra
 	nop
 
 opcode_Exnn:  // void(hword opcode)
@@ -714,7 +831,7 @@ opcode_Fx55_loop_start:
 	sb      t1, 0(t2)
 	addiu   index, index, 1
 	andi    index, index, $fff
-	bne     t0, a0, opcode_Fx55_loop_start
+	bnel    t0, a0, opcode_Fx55_loop_start
 	addiu   t0, t0, 1
 	jr      ra
 	nop
@@ -729,64 +846,40 @@ opcode_Fx65_loop_start:
 	sb      t1, 0(t2)
 	addiu   index, index, 1
 	andi    index, index, $fff
-	bne     t0, a0, opcode_Fx65_loop_start
+	bnel    t0, a0, opcode_Fx65_loop_start
 	addiu   t0, t0, 1
 	jr      ra
 	nop
 
+inc_pc:  // void()
+	addiu   pc, pc, 2
+	jr      ra
+	andi    pc, pc, $fff
+
+panic:  // void()
+	break
+	jr      ra
+	nop
+
 play_audio:  // TODO
-	jr ra
+	jr      ra
 	nop
 
-// byte 0: command length (1)
-// byte 1: result length (4)
-// byte 2: command (1)
-// bytes 3-6: result (joypad status)
-poll_input:  // void()
-	// write to start of PIF RAM bytes 0-2
-	lui t0, $bfc0
-	lui t1, $0104
-	ori t1, zero, $0100
-	sw t1, $7c0(t0)
-
-	// write 1 to the PIF RAM control byte, triggering the joybus protocol
-	ori t1, zero, 1
-	sw t1, $7fc(t0)
-
-	// read the result (bytes 3-6). best to stick to aligned word reads here
-	lw t1, $7c0(t0)
-	lw t2, $7c4(t0)
-
-	// TODO: use the input
-	jr ra
-	nop
-
-await_input:  // byte() -- returns the index of the next key pressed
-	jr ra
-	nop
-
-render:  // void()
-	la     t0, ch8_framebuffer
-	addiu  t1, t0, CH8_FRAMEBUFFER_SIZE
-	li     t2, N64_FRAMEBUFFER_START
-render_loop:
-	lb     t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff'ffff for 8/8/8/8
-	sw     t3, 0(t2)
-	addiu  t0, t0, 1
-	bne    t0, t1, render_loop
-	addiu  t2, t2, 4
-	jr     ra
-	nop
-
-panic: // TODO
-	jr ra
-	nop
+align(N64_ICACHE_SIZE)
+instr_end:
+data_begin:
 
 do_run:
 	db 1
 
-addr_memory:
-	dw $80000000
+got_v_sync:
+	db 0
+
+ch8_memory:
+	data_array(CH8_MEM_SIZE)
+
+ch8_framebuffer:
+	data_array(CH8_FRAMEBUFFER_SIZE)
 
 stack:
 	dd 0, 0
@@ -802,9 +895,6 @@ delay_timer:
 
 sound_timer:
 	db 60
-
-ch8_framebuffer:
-	db 0
 
 fontset:
 	dd $f0909090f0206020
@@ -853,3 +943,12 @@ instr_jump_table_8000:
 	dw panic
 	dw opcode_8xyE
 	dw panic
+
+define ch8_rom_file = "game.ch8"
+assert(file.exists({ch8_rom_file}))
+constant CH8_ROM_SIZE = file.size({ch8_rom_file})
+assert(CH8_ROM_SIZE > 0 && CH8_ROM_SIZE <= MAX_CH8_ROM_SIZE)
+ch8_rom:
+	insert {ch8_rom_file}
+
+data_end:
