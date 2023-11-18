@@ -207,6 +207,8 @@ load_rom_loop:
 	la      t0, stack
 	sd      zero, 0(t0)
 	sd      zero, 8(t0)
+	sd      zero, 16(t0)
+	sd      zero, 24(t0)
 	la      t0, key
 	sd      zero, 0(t0)
 	sd      zero, 8(t0)
@@ -394,10 +396,10 @@ opcode_0nnn:  // void(hword opcode)
 	// 00EE; RET -- Return from subroutine
 	la      t0, stack
 	addu    t0, t0, ch8_sp
-	lbu     pc, 0(t0)
-	addiu   ch8_sp, ch8_sp, -1
+	lhu     pc, 0(t0)
+	addiu   ch8_sp, ch8_sp, -2
 	jr      ra
-	andi    ch8_sp, ch8_sp, $f
+	andi    ch8_sp, ch8_sp, $1f
 
 // JP addr -- Jump to location nnn
 opcode_1nnn:  // void(hword opcode)
@@ -406,11 +408,11 @@ opcode_1nnn:  // void(hword opcode)
 
 // CALL addr -- Call subroutine at nnn
 opcode_2nnn:  // void(hword opcode)
-	addiu   ch8_sp, ch8_sp, 1
-	andi    ch8_sp, ch8_sp, $f
+	addiu   ch8_sp, ch8_sp, 2
+	andi    ch8_sp, ch8_sp, $1f
 	la      t0, stack
 	addu    t0, t0, ch8_sp
-	sb      pc, 0(t0)
+	sh      pc, 0(t0)
 	jr      ra
 	andi    pc, a0, $fff
 
@@ -885,7 +887,7 @@ ch8_framebuffer:
 
 align(8)
 stack:
-	dd 0, 0
+	dd 0, 0, 0, 0
 
 align(8)
 v_data:
