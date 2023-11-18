@@ -10,7 +10,7 @@ db $40 // Initial PI_BSB_DOM1_PGS_REG Value
 dw $000F // Initial Clock Rate
 
 // VECTOR
-dw main // Boot Address Offset
+dw instr_begin // Boot Address Offset
 dw $1444 // Release Offset
 
 // COMPLEMENT CHECK & CHECKSUM
@@ -21,6 +21,7 @@ dd 0 // UNUSED
 
 // PROGRAM TITLE (27 Byte ASCII String, Use Spaces For Unused Bytes)
 db "CHIP-64                    "
+// "123456789012345678901234567"
 
 // DEVELOPER ID CODE 
 db $00 // "N" = Nintendo
@@ -31,6 +32,6 @@ db $00
 db 0 // UNUSED
 
 // COUNTRY CODE 
-db "E" // "D" = Germany, "E" = USA, "J" = Japan, "P" = Europe, "U" = Australia
+db $00 // "D" = Germany, "E" = USA, "J" = Japan, "P" = Europe, "U" = Australia
 
 db 0 // UNUSED

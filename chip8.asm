@@ -10,21 +10,21 @@ output "chip64.z64", create
 // After the DMA, the PC is set to this address.
 
 constant N64_ROM_SIZE = $100000
-fill N64_ROM_SIZE + $1000       // set rom size
+fill N64_ROM_SIZE + $1000       // set rom size. minimum size (?) since the boot code will do a PI DMA of this size
 origin $0                       // rom location
 base $80000000                  // signed displacement against origin, used when computing the pc value for labels
-
-include "n64_header.asm"
-insert "n64_bootcode.bin"
 
 include "n64.inc"
 include "util.inc"
 
+include "n64_header.asm"
+include "n64_boot.asm"
+
 constant pc = fp
-constant ch8_sp = t9
 constant index = k0
 constant v = k1
 constant ch8_mem = gp
+constant ch8_sp = s7
 
 constant CH8_FRAMEBUFFER_SIZE = 32*64
 constant CH8_MEM_SIZE = $1000
@@ -53,54 +53,49 @@ init_n64:  // void()
 	// init MI
 	lui     t0, MI_BASE
 	ori     t1, zero, $388                 // Enable PI, SI, VI interrupts
-	sw      t1, MI_MASK_OFFSET(t0)
+	sw      t1, MI_MASK(t0)
 
 	// init VI
 	lui     t0, VI_BASE
 	ori     t1, zero, $3303                // 8/8/8/8 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
-	sw      t1, VI_CTRL_OFFSET(t0)
+	sw      t1, VI_CTRL(t0)
 	li      t1, RDRAM_FRAMEBUFFER_ADDR
-	sw      t1, VI_ORIGIN_OFFSET(t0)
+	sw      t1, VI_ORIGIN(t0)
 	ori     t1, zero, 320
-	sw      t1, VI_WIDTH_OFFSET(t0)
+	sw      t1, VI_WIDTH(t0)
 	ori     t1, zero, VI_V_SYNC_LINE
-	sw      t1, VI_V_INTR_OFFSET(t0)
+	sw      t1, VI_V_INTR(t0)
 	li      t1, $3e52239                   // NTSC standard?
-	sw      t1, VI_BURST_OFFSET(t0)
+	sw      t1, VI_BURST(t0)
 	ori     t1, zero, 525                  // NTSC, non-interlaced
-	sw      t1, VI_V_SYNC_OFFSET(t0)
+	sw      t1, VI_V_SYNC(t0)
 	li      t1, $150c15                    // NTSC standard?
-	sw      t1, VI_H_SYNC_OFFSET(t0)
-	sw      t1, VI_H_SYNC_LEAP_OFFSET(t0)
+	sw      t1, VI_H_SYNC(t0)
+	sw      t1, VI_H_SYNC_LEAP(t0)
 	lui     t1, 108
 	ori     t1, t1, 748
-	sw      t1, VI_H_VIDEO_OFFSET(t0)
+	sw      t1, VI_H_VIDEO(t0)
 	lui     t1, 37
 	ori     t1, t1, 511
-	sw      t1, VI_V_VIDEO_OFFSET(t0)
+	sw      t1, VI_V_VIDEO(t0)
 	lui     t1, $e
 	ori     t1, t1, $204
-	sw      t1, VI_V_BURST_OFFSET(t0)
+	sw      t1, VI_V_BURST(t0)
 
 	// enable interrupts
 	ori     t0, zero, $1400
 	mtc0    t0, CP0_STATUS                 // Set im2+im4 (enable MI and 'reset' interrupts)
 
-	// copy N64 ROM to RDRAM (skip header and boot code)
-	lui     t0, PI_BASE
-	ori     t1, zero, 3
-	sw      t1, PI_STATUS_OFFSET(t0)       // reset DMA controller and clear previous interrupt, if any
-	sw      zero, PI_DRAM_ADDR_OFFSET(t0)
-	ori     t2, zero, $1000                // offset rom header + boot code
-	sw      t2, PI_CART_ADDR_OFFSET(t0)
-	li      t2, N64_ROM_SIZE - 1
-	sw      t2, PI_WR_LEN_OFFSET(t0)
-await_pi_dma:
-	lw      t2, PI_STATUS_OFFSET(t0)
-	andi    t2, t2, 8
-	beql    t2, zero, await_pi_dma
-	nop
-	sw      t1, PI_STATUS_OFFSET(t0)
+	// install exception handler at $8000'0180
+	la      t0, exception_handler_180
+	li      t1, $80000180
+	addi    t2, t0, exception_handler_180_end - exception_handler_180
+install_exception_handler_loop:
+	lw      t3, 0(t0)
+	sw      t3, 0(t1)
+	addi    t0, t0, 4
+	bnel    t0, t2, install_exception_handler_loop
+	addi    t1, t1, 4
 
 	// cache instructions. The N64 i-cache is only 16 KiB but our code should be smaller than that
 	// assert(instr_end - instr_begin <= N64_ICACHE_SIZE)
@@ -140,7 +135,7 @@ handle_mi_interrupt:
 	addiu   sp, sp, -8
 	sd      ra, 0(sp)
 	lui     t0, MI_BASE
-	lw      t0, MI_INTERRUPT_OFFSET(t0)
+	lw      t0, MI_INTERRUPT(t0)
 	andi    t1, t0, 8                      // VI interrupt flag
 	addiu   t1, t1, -8
 	bgezall t1, handle_vi_interrupt
@@ -157,12 +152,13 @@ handle_vi_interrupt:
 	sd      ra, 0(sp)
 	lui     t0, VI_BASE
 	ori     t1, zero, VI_V_SYNC_LINE
-	sw      t1, VI_V_CURRENT_OFFSET(t0)
+	sw      t1, VI_V_CURRENT(t0)
 	jal     render
 	nop
 	ld      ra, 0(sp)
 	j       poll_input
 	addiu   sp, sp, 8
+exception_handler_180_end:
 
 init_chip8:  // void()
 	la      ch8_mem, ch8_memory
@@ -382,6 +378,7 @@ decode_and_exec_instr:
 	andi    t0, t0, $3c
 	la      t1, instr_jump_table
 	addu    t1, t1, t0
+	lw      t1, 0(t1)
 	jr      t1
 	andi    pc, pc, $fff
 
@@ -411,7 +408,9 @@ opcode_1nnn:  // void(hword opcode)
 opcode_2nnn:  // void(hword opcode)
 	addiu   ch8_sp, ch8_sp, 1
 	andi    ch8_sp, ch8_sp, $f
-	sb      pc, 0(ch8_sp)
+	la      t0, stack
+	addu    t0, t0, ch8_sp
+	sb      pc, 0(t0)
 	jr      ra
 	andi    pc, a0, $fff
 
@@ -491,6 +490,7 @@ opcode_8xyn:  // void(hword opcode)
 	andi    t2, t0, $f
 	sll     t2, t2, 2
 	addu    t1, t1, t2
+	lw      t1, 0(t1)
 	jr      t1
 	addu    a1, a1, v
 
@@ -875,18 +875,23 @@ do_run:
 got_v_sync:
 	db 0
 
+align(8)
 ch8_memory:
 	data_array(CH8_MEM_SIZE)
 
+align(8)
 ch8_framebuffer:
 	data_array(CH8_FRAMEBUFFER_SIZE)
 
+align(8)
 stack:
 	dd 0, 0
 
+align(8)
 v_data:
 	dd 0, 0
 
+align(8)
 key:
 	dd 0, 0
 
@@ -896,6 +901,7 @@ delay_timer:
 sound_timer:
 	db 60
 
+align(8)
 fontset:
 	dd $f0909090f0206020
 	dd $2070f010f080f0f0
@@ -908,6 +914,7 @@ fontset:
 	dd $f0e0909090e0f080
 	dd $f080f0f080f08080
 
+align(4)
 instr_jump_table:
 	dw opcode_0nnn
 	dw opcode_1nnn
@@ -926,6 +933,7 @@ instr_jump_table:
 	dw opcode_Exnn
 	dw opcode_Fxnn
 
+align(4)
 instr_jump_table_8000:
 	dw opcode_8xy0
 	dw opcode_8xy1
@@ -948,6 +956,7 @@ define ch8_rom_file = "game.ch8"
 assert(file.exists({ch8_rom_file}))
 constant CH8_ROM_SIZE = file.size({ch8_rom_file})
 assert(CH8_ROM_SIZE > 0 && CH8_ROM_SIZE <= MAX_CH8_ROM_SIZE)
+align(8)
 ch8_rom:
 	insert {ch8_rom_file}
 
