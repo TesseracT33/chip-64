@@ -26,27 +26,35 @@ constant v = k1
 constant ch8_mem = gp
 constant ch8_sp = s7
 
-constant CH8_FRAMEBUFFER_SIZE = 32*64
+constant CH8_HEIGHT = 32
+constant CH8_WIDTH = 64
+constant CH8_FRAMEBUFFER_SIZE = CH8_WIDTH*CH8_HEIGHT
+constant CH8_INSTRS_PER_VSYNC = 30
 constant CH8_MEM_SIZE = $1000
 constant CH8_ROM_START_ADDR = $200
-constant CYCLES_PER_VSYNC = 2000
 constant FONTSET_SIZE = $50
 constant MAX_CH8_ROM_SIZE = CH8_MEM_SIZE - CH8_ROM_START_ADDR
-constant RDRAM_FRAMEBUFFER_ADDR = RDRAM_ROM_ADDR + N64_ROM_SIZE
+constant RDRAM_FRAMEBUFFER_ADDR = (RDRAM_ROM_ADDR + N64_ROM_SIZE + N64_STACK_SIZE) | $A0000000
+constant RDRAM_STACK_ADDR = (RDRAM_ROM_ADDR + N64_ROM_SIZE + N64_STACK_SIZE - 8) | $80000000
 constant RDRAM_ROM_ADDR = 0
-constant VI_V_SYNC_LINE = 2
+constant N64_BPP = 4
+constant N64_HEIGHT = 320
+constant N64_STACK_SIZE = 10 * 1024
+constant N64_WIDTH = 640
+constant VI_V_SYNC_LINE = 512
 
 instr_begin:
 
 main:
-	jal init_n64
+	li      sp, RDRAM_STACK_ADDR
+	jal     init_n64
 	nop
-	jal init_chip8
+	jal     init_chip8
 	nop
-	jal run
+	jal     run
 	nop
 main_end:
-	j main_end
+	j       main_end
 	nop
 
 init_n64:  // void()
@@ -61,30 +69,28 @@ init_n64:  // void()
 	sw      t1, VI_CTRL(t0)
 	li      t1, RDRAM_FRAMEBUFFER_ADDR
 	sw      t1, VI_ORIGIN(t0)
-	ori     t1, zero, 320
+	ori     t1, zero, N64_WIDTH
 	sw      t1, VI_WIDTH(t0)
 	ori     t1, zero, VI_V_SYNC_LINE
 	sw      t1, VI_V_INTR(t0)
 	li      t1, $3e52239                   // NTSC standard?
 	sw      t1, VI_BURST(t0)
-	ori     t1, zero, 525                  // NTSC, non-interlaced
+	ori     t1, zero, $20d                 // NTSC, non-interlaced
 	sw      t1, VI_V_SYNC(t0)
-	li      t1, $150c15                    // NTSC standard?
+	li      t1, $c15                       // NTSC standard?
 	sw      t1, VI_H_SYNC(t0)
+	li      t1, $c150c15                   // NTSC standard?
 	sw      t1, VI_H_SYNC_LEAP(t0)
-	lui     t1, 108
-	ori     t1, t1, 748
+	li      t1, $6c02ec
 	sw      t1, VI_H_VIDEO(t0)
-	lui     t1, 37
-	ori     t1, t1, 511
+	li      t1, $2501ff
 	sw      t1, VI_V_VIDEO(t0)
-	lui     t1, $e
-	ori     t1, t1, $204
+	li      t1, $e0204
 	sw      t1, VI_V_BURST(t0)
-
-	// enable interrupts
-	ori     t0, zero, $1400
-	mtc0    t0, CP0_STATUS                 // Set im2+im4 (enable MI and 'reset' interrupts)
+	ori     t1, zero, $100*N64_WIDTH/160
+	sw      t1, VI_X_SCALE(t0)
+	ori     t1, zero, $100*N64_HEIGHT/60
+	sw      t1, VI_Y_SCALE(t0)
 
 	// install exception handler at $8000'0180
 	la      t0, exception_handler_180
@@ -107,6 +113,10 @@ cache_instrs_loop:
 	subu    t2, t1, t0
 	bgtz    t2, cache_instrs_loop
 	nop
+
+	// enable interrupts
+	ori     t0, zero, $1401
+	mtc0    t0, CP0_STATUS                 // Set ie+im2+im4 (enable MI and 'reset' interrupts)
 
 	jr      ra
 	nop
@@ -139,17 +149,19 @@ handle_mi_interrupt:
 	andi    t1, t0, 8                      // VI interrupt flag
 	addiu   t1, t1, -8
 	bgezall t1, handle_vi_interrupt
-	nop                                    // TODO: handle remaining exceptions
+	nop                                    // TODO: handle remaining interrupts
 	ld      ra, 0(sp)
-	addiu   sp, sp, 8
 	jr      ra
-	nop
+	addiu   sp, sp, 8
 handle_system_reset_interrupt: // TODO
 	jr      ra
 	nop
 handle_vi_interrupt:
 	addiu   sp, sp, -8
 	sd      ra, 0(sp)
+	la      t0, got_v_sync
+	ori     t1, zero, 1
+	sb      t1, 0(t0)
 	lui     t0, VI_BASE
 	ori     t1, zero, VI_V_SYNC_LINE
 	sw      t1, VI_V_CURRENT(t0)
@@ -215,18 +227,19 @@ load_rom_loop:
 	la      v, v_data
 	sd      zero, 0(v)
 	sd      zero, 8(v)
+	la      t0, render_flag
+	lb      zero, 0(t0)
 
 	j       clear_framebuffer
 	nop
 
 clear_framebuffer:  // void()
 	la      t0, ch8_framebuffer
-	addiu   t1, t0, CH8_FRAMEBUFFER_SIZE
+	addiu   t1, t0, CH8_FRAMEBUFFER_SIZE-8
 clear_framebuffer_loop:
 	sd      zero, 0(t0)
-	addiu   t0, t0, 8
 	bnel    t0, t1, clear_framebuffer_loop
-	nop
+	addiu   t0, t0, 8
 	jr      ra
 	nop
 
@@ -301,19 +314,39 @@ poll_input:  // void()
 	nop
 
 await_input:  // byte() -- returns the index of the next key pressed
-	jr      ra
+	jr      ra // TODO
 	nop
 
 render:  // void()
+	la      t0, render_flag
+	lb      t1, 0(t0)
+	bnel    t1, zero, start_render
+	sb      zero, 0(t0)
+	jr      ra
+start_render:
 	la      t0, ch8_framebuffer
 	li      t1, RDRAM_FRAMEBUFFER_ADDR
-	addiu   t2, t0, CH8_FRAMEBUFFER_SIZE
+	addi    t2, t0, CH8_FRAMEBUFFER_SIZE
 render_loop:
-	lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff'ffff for 8/8/8/8
-	sw      t3, 0(t1)
-	addiu   t0, t0, 1
+	lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or -1 for 8/8/8/8
+	move    t4, t1
+	addi    t5, t4, 9*N64_WIDTH*N64_BPP
+render_loop_y:
+	sd      t3, 0(t4)
+	sd      t3, 8(t4)
+	sd      t3, 16(t4)
+	sd      t3, 24(t4)
+	sd      t3, 32(t4)  // 40 bytes for 10 8/8/8/8 pixels
+	bnel    t4, t5, render_loop_y
+	addi    t4, t4, N64_WIDTH*N64_BPP
+	addi    t0, t0, 1
+	//assert(ch8_framebuffer % CH8_WIDTH == 0)
+	andi    t6, t0, CH8_WIDTH-1
+	beql    t6, zero, new_y_line
+	addi    t1, t1, 9*N64_WIDTH*N64_BPP
+new_y_line:
 	bnel    t0, t2, render_loop
-	addiu   t1, t1, 4
+	addi    t1, t1, 10*N64_BPP
 	jr      ra
 	nop
 
@@ -322,7 +355,7 @@ run:  // void()
 	sd       ra, 0(sp)
 	sd       s0, 8(sp)
 run_loop:
-	li       s0, CYCLES_PER_VSYNC
+	li       s0, CH8_INSTRS_PER_VSYNC
 step_cycle_loop:
 	jal      step_cycle
 	addiu    s0, s0, -1
@@ -418,75 +451,76 @@ opcode_2nnn:  // void(hword opcode)
 
 // SE Vx, byte -- Skip next instruction if Vx == nn
 opcode_3xnn:  // void(hword opcode)
-	srl    t0, a0, 8
-	andi   t0, t0, $f
-	addu   t0, t0, v
-	lbu    t0, 0(t0)
-	andi   t1, a0, $ff
-	beql   t0, t1, inc_pc
+	srl     t0, a0, 8
+	andi    t0, t0, $f
+	addu    t0, t0, v
+	lbu     t0, 0(t0)
+	andi    t1, a0, $ff
+	beql    t0, t1, inc_pc
 	nop
-	jr     ra
+	jr      ra
 	nop
 
 // SNE Vx, byte -- Skip next instruction if Vx != nn
 opcode_4xnn:  // void(hword opcode)
-	srl    t0, a0, 8
-	andi   t0, t0, $f
-	addu   t0, t0, v
-	lbu    t0, 0(t0)
-	andi   t1, a0, $ff
-	bnel   t0, t1, inc_pc
+	srl     t0, a0, 8
+	andi    t0, t0, $f
+	addu    t0, t0, v
+	lbu     t0, 0(t0)
+	andi    t1, a0, $ff
+	bnel    t0, t1, inc_pc
 	nop
-	jr     ra
+	jr      ra
 	nop
 
 // SE Vx, Vy -- Skip next instruction if Vx == Vy.
 opcode_5xy0:  // void(hword opcode)
 	// Get Vx
-	srl    t0, a0, 8
-	andi   t0, t0, $f
-	addu   t0, t0, v
-	lbu    t0, 0(t0)
+	srl     t0, a0, 8
+	andi    t0, t0, $f
+	addu    t0, t0, v
+	lb      t0, 0(t0)
 
 	// Get Vy
-	srl    t1, a0, 4
-	andi   t1, t1, $f
-	addu   t1, t1, v
-	lbu    t1, 0(t1)
+	srl     t1, a0, 4
+	andi    t1, t1, $f
+	addu    t1, t1, v
+	lb      t1, 0(t1)
 
-	beql   t0, t1, inc_pc
+	beql    t0, t1, inc_pc
 	nop
-	jr     ra
+	jr      ra
 	nop
 
 // LD Vx, byte -- Set Vx = nn
 opcode_6xnn:  // void(hword opcode)
-	srl    t0, a0, 8
-	andi   t0, t0, $f
-	addu   t0, t0, v
-	jr     ra
-	sb     a0, 0(t0)
+	srl     t0, a0, 8
+	andi    t0, t0, $f
+	addu    t0, t0, v
+	jr      ra
+	sb      a0, 0(t0)
 
 // ADD Vx, byte -- Set Vx = Vx + nn
 opcode_7xnn:  // void(hword opcode)
-	srl    t0, a0, 8
-	andi   t0, t0, $f
-	addu   t0, t0, v
-	lb     t1, 0(t0)
-	addu   t1, t1, a0
-	jr     ra
-	sb     t1, 0(t0)
+	srl     t0, a0, 8
+	andi    t0, t0, $f
+	addu    t0, t0, v
+	lb      t1, 0(t0)
+	addu    t1, t1, a0
+	jr      ra
+	sb      t1, 0(t0)
 
 opcode_8xyn:  // void(hword opcode)
 	move    t0, a0
-	// Get Vx
-	srl     a0, t0, 8
+	// Get &Vx
+	srl     a0, a0, 8
 	andi    a0, a0, $f
 	addu    a0, a0, v
 
-	// Get Vy
+	// Get &Vy
 	srl     a1, t0, 4
 	andi    a1, a1, $f
+	addu    a1, a1, v
 
 	la      t1, instr_jump_table_8000
 	andi    t2, t0, $f
@@ -494,7 +528,7 @@ opcode_8xyn:  // void(hword opcode)
 	addu    t1, t1, t2
 	lw      t1, 0(t1)
 	jr      t1
-	addu    a1, a1, v
+	nop
 
 // LD Vx, Vy -- Set Vx = Vy
 opcode_8xy0:  // void(word &Vx, word &Vy)
@@ -581,11 +615,11 @@ opcode_9xy0:  // void(hword opcode)
 	srl     t0, a0, 8
 	andi    t0, t0, $f
 	addu    t0, t0, v
-	lbu     t0, 0(t0)
+	lb      t0, 0(t0)
 	srl     t1, a0, 4
 	andi    t1, t1, $f
 	addu    t1, t1, v
-	lbu     t1, 0(t1)
+	lb      t1, 0(t1)
 	bnel    t0, t1, inc_pc
 	nop
 	jr      ra
@@ -617,49 +651,51 @@ opcode_Cxnn:  // void(hword opcode)
 	jr      ra
 	sb      t0, 0(t1)
 
+// DRW Vx, Vy, nibble -- Draw sprite of height n (n bytes) starting at memory location I at coordinates (Vx, Vy), and set VF = collision
 opcode_Dxyn:  // void(hword opcode)
 	srl     t0, a0, 8
 	andi    t0, t0, $f
 	addu    t0, t0, v
-	lbu     t0, 0(t0)
-	andi    t0, t0, 63 // vx
+	lb      t0, 0(t0)
+	andi    t0, t0, CH8_WIDTH-1 // vx
 	srl     t1, a0, 4
 	andi    t1, t1, $f
 	addu    t1, t1, v
-	lbu     t1, 0(t1)
-	andi    t1, t1, 31  // y
-	la      a0, ch8_framebuffer
-	ori     a1, zero, $80
+	lb      t1, 0(t1)
+	andi    t1, t1, CH8_HEIGHT-1 // vy
 	sb      zero, $f(v)
 	andi    t2, a0, $f // height
 	addu    t2, t2, t1 // ymax
-	slti    t3, t2, 33
+	slti    t3, t2, CH8_HEIGHT+1
 	bnel    t3, zero, calc_width
-	ori     t2, zero, 32
+	ori     t2, zero, CH8_HEIGHT
 calc_width:
-	ori     t3, zero, 64
+	ori     t3, zero, CH8_WIDTH
 	subu    t3, t3, t0
 	slti    t4, t3, 8
-	bnel    t4, zero, draw_loop_begin
-	ori     t3, zero, 8 // sprite width
+	bnel    t4, zero, draw
+	ori     t3, zero, 8 // width
+draw:
+	la      a0, ch8_framebuffer
+	ori     a1, zero, $80
+	move    a2, zero  // collision
 draw_loop_begin:
 	addiu   t4, ch8_mem, index
 	addiu   index, index, 1
-	lbu     t4, 0(t4)  // x-strip
+	lb      t4, 0(t4)  // x-strip
 	sll     t5, t1, 6
 	addu    t5, t5, t0 // framebuffer pos
-	move    t6, zero   // xline
+	move    t6, zero   // x
 draw_strip_begin:
 	srlv    t7, a1, t6
 	and     t7, t7, t4
 	beq     t7, zero, draw_pixel_end
 	addu    t7, a0, t5
-	lbu     t8, 0(t7)
+	lb      t8, 0(t7)
 	beq     t8, zero, draw_pixel
-	ori     t9, zero, 1
-	sb      t9, $f(v)
-draw_pixel:
 	xori    t8, t8, $ff
+	ori     a2, a2, 1
+draw_pixel:
 	sb      t8, 0(t7)
 draw_pixel_end:
 	addiu   t6, t6, 1
@@ -669,15 +705,18 @@ draw_strip_end:
 	addiu   t1, t1, 1
 	bne     t1, t2, draw_loop_begin
 	andi    index, index, $fff
+	sb      a2, $f(v)
+	la      t0, render_flag
+	ori     t1, zero, 1
 	jr      ra
-	nop
+	sb      t1, 0(t0)
 
 opcode_Exnn:  // void(hword opcode)
 	andi    t0, a0, $ff
 	srl     a0, a0, 8
 	andi    a0, a0, $f
 	addu    a0, a0, v
-	lbu     a0, 0(a0)
+	lb      a0, 0(a0)
 	andi    a0, a0, $f
 	la      t1, key
 	addu    a0, a0, t1
@@ -741,7 +780,6 @@ opcode_Fx07:  // void(byte x)
 	jr      ra
 	sb      t0, 0(a0)
 
-
 // LD Vx, K --  Wait for a key press, store the value of the key in Vx
 opcode_Fx0A:  // void(byte x)
 	addiu   sp, sp, -16
@@ -759,7 +797,7 @@ opcode_Fx0A:  // void(byte x)
 // LD DT, Vx -- Set delay timer = Vx
 opcode_Fx15:  // void(byte x)
 	addu    a0, a0, v
-	lbu     a0, 0(a0)
+	lb      a0, 0(a0)
 	la      t0, delay_timer
 	jr      ra
 	sb      a0, 0(t0)
@@ -767,7 +805,7 @@ opcode_Fx15:  // void(byte x)
 // LD ST, Vx -- Set sound timer = Vx
 opcode_Fx18:  // void(byte x)
 	addu    a0, a0, v
-	lbu     a0, 0(a0)
+	lb      a0, 0(a0)
 	la      t0, sound_timer
 	jr      ra
 	sb      a0, 0(t0)
@@ -881,7 +919,7 @@ align(8)
 ch8_memory:
 	data_array(CH8_MEM_SIZE)
 
-align(8)
+align(64)
 ch8_framebuffer:
 	data_array(CH8_FRAMEBUFFER_SIZE)
 
@@ -902,6 +940,9 @@ delay_timer:
 
 sound_timer:
 	db 60
+
+render_flag:
+	db 0
 
 align(8)
 fontset:
