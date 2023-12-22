@@ -29,7 +29,7 @@ constant ch8_sp = s7
 constant CH8_HEIGHT = 32
 constant CH8_WIDTH = 64
 constant CH8_FRAMEBUFFER_SIZE = CH8_WIDTH*CH8_HEIGHT
-constant CH8_INSTRS_PER_VSYNC = 30
+constant CH8_INSTRS_PER_VSYNC = 10
 constant CH8_MEM_SIZE = $1000
 constant CH8_ROM_START_ADDR = $200
 constant FONTSET_SIZE = $50
@@ -65,7 +65,7 @@ init_n64:  // void()
 
 	// init VI
 	lui     t0, VI_BASE
-	ori     t1, zero, $3303                // 8/8/8/8 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
+	ori     t1, zero, $3303                // 5/5/5/3 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
 	sw      t1, VI_CTRL(t0)
 	li      t1, RDRAM_FRAMEBUFFER_ADDR
 	sw      t1, VI_ORIGIN(t0)
@@ -653,32 +653,32 @@ opcode_Cxnn:  // void(hword opcode)
 
 // DRW Vx, Vy, nibble -- Draw sprite of height n (n bytes) starting at memory location I at coordinates (Vx, Vy), and set VF = collision
 opcode_Dxyn:  // void(hword opcode)
+	move    a2, zero        // collision
 	srl     t0, a0, 8
 	andi    t0, t0, $f
 	addu    t0, t0, v
 	lb      t0, 0(t0)
-	andi    t0, t0, CH8_WIDTH-1 // vx
+	andi    t0, t0, CH8_WIDTH-1  // vx
 	srl     t1, a0, 4
 	andi    t1, t1, $f
 	addu    t1, t1, v
 	lb      t1, 0(t1)
 	andi    t1, t1, CH8_HEIGHT-1 // vy
-	sb      zero, $f(v)
-	andi    t2, a0, $f // height
-	addu    t2, t2, t1 // ymax
+	andi    t2, a0, $f           // height
+	beq     t2, zero, draw_end
+	addu    t2, t2, t1           // ymax
 	slti    t3, t2, CH8_HEIGHT+1
-	bnel    t3, zero, calc_width
+	beql    t3, zero, calc_width
 	ori     t2, zero, CH8_HEIGHT
 calc_width:
-	ori     t3, zero, CH8_WIDTH
+	ori     t3, zero, CH8_WIDTH 
 	subu    t3, t3, t0
-	slti    t4, t3, 8
-	bnel    t4, zero, draw
+	slti    t4, t3, 9
+	beql    t4, zero, draw
 	ori     t3, zero, 8 // width
 draw:
 	la      a0, ch8_framebuffer
 	ori     a1, zero, $80
-	move    a2, zero  // collision
 draw_loop_begin:
 	addiu   t4, ch8_mem, index
 	addiu   index, index, 1
@@ -690,6 +690,7 @@ draw_strip_begin:
 	srlv    t7, a1, t6
 	and     t7, t7, t4
 	beq     t7, zero, draw_pixel_end
+	addiu   t6, t6, 1
 	addu    t7, a0, t5
 	lb      t8, 0(t7)
 	beq     t8, zero, draw_pixel
@@ -698,13 +699,13 @@ draw_strip_begin:
 draw_pixel:
 	sb      t8, 0(t7)
 draw_pixel_end:
-	addiu   t6, t6, 1
 	bnel    t6, t3, draw_strip_begin
 	addiu   t5, t5, 1
 draw_strip_end:
 	addiu   t1, t1, 1
 	bne     t1, t2, draw_loop_begin
 	andi    index, index, $fff
+draw_end:
 	sb      a2, $f(v)
 	la      t0, render_flag
 	ori     t1, zero, 1
@@ -1004,3 +1005,68 @@ ch8_rom:
 	insert {ch8_rom_file}
 
 data_end:
+
+
+adc:
+	add     t0, a, op
+	add     t0, a, carry
+	ori     t1, zero, $ff
+	slt     carry, t1, t0
+	xor     t1, a, t0
+	xor     t2, op, t0
+	and     t1, t1, t2
+	andi    a, t0, $ff
+	slti    status_zero, a, 1
+
+and:
+	and     a, a, op
+	slti    status_zero, a, 1
+	jr      ra
+	srl     status_neg, a, 7
+
+asl_a:
+	srl     status_carry, a, 7
+	sll     a, a, 1
+	slti    status_zero, a, 1
+	jr      ra
+	srl     status_neg, a, 7
+
+asl_m:
+	srl     status_carry, op, 7
+	sll     op, op, 1
+	slti    status_zero, op, 1
+	jr      ra
+	srl     status_neg, op, 7
+
+bcc:
+	beq     status_carry, zero, bcc_end
+	andi    t0, addr, $ff
+	andi    t1, pc, $ff00
+	add     pc, pc, t0
+	andi    t2, pc, $ff00
+	bnel    t1, t2, bcc_end
+	addi    cycles, cycles, 2
+	addi    cycles, cycles, 1
+bcc_end:
+	jr      ra
+	nop
+
+6502_bit:
+	and     t0, a, op
+	slti    status_zero, t0, 1
+	srl     t0, op, 6
+	andi    status_overflow, t0, 1
+	jr      ra
+	srl     status_neg, op, 1
+
+6502_clc:
+	jr      ra
+	move    status_carry, zero
+
+6502_cld:
+	jr      ra
+	move    status_decimal, zero
+
+6502_cmp:
+	sub     t0, a op
+	slti    status_carry, t0, -1
