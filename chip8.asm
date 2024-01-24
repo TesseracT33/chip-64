@@ -28,20 +28,25 @@ constant ch8_sp = s7
 
 constant CH8_HEIGHT = 32
 constant CH8_WIDTH = 64
-constant CH8_FRAMEBUFFER_SIZE = CH8_WIDTH*CH8_HEIGHT
+constant CH8_FRAMEBUFFER_SIZE = CH8_WIDTH * CH8_HEIGHT
 constant CH8_INSTRS_PER_VSYNC = 10
 constant CH8_MEM_SIZE = $1000
 constant CH8_ROM_START_ADDR = $200
 constant FONTSET_SIZE = $50
+constant GFX_SCALE = 10
 constant MAX_CH8_ROM_SIZE = CH8_MEM_SIZE - CH8_ROM_START_ADDR
+constant N64_BPP = 2
+constant N64_HEIGHT = 480
+constant N64_STACK_SIZE = 10 * 1024
+constant N64_WIDTH = 640
 constant RDRAM_FRAMEBUFFER_ADDR = (RDRAM_ROM_ADDR + N64_ROM_SIZE + N64_STACK_SIZE) | $A0000000
 constant RDRAM_STACK_ADDR = (RDRAM_ROM_ADDR + N64_ROM_SIZE + N64_STACK_SIZE - 8) | $80000000
 constant RDRAM_ROM_ADDR = 0
-constant N64_BPP = 4
-constant N64_HEIGHT = 320
-constant N64_STACK_SIZE = 10 * 1024
-constant N64_WIDTH = 640
 constant VI_V_SYNC_LINE = 512
+
+constant N64_RENDER_OFFSET_Y = (N64_HEIGHT - CH8_HEIGHT * GFX_SCALE) / 2
+
+assert(CH8_WIDTH * GFX_SCALE == N64_WIDTH)
 
 instr_begin:
 
@@ -65,7 +70,7 @@ init_n64:  // void()
 
 	// init VI
 	lui     t0, VI_BASE
-	ori     t1, zero, $3303                // 5/5/5/3 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
+	ori     t1, zero, $3302                // 5/5/5/3 colour mode; disable AA and resampling; set PIXEL_ADVANCE %0011
 	sw      t1, VI_CTRL(t0)
 	li      t1, RDRAM_FRAMEBUFFER_ADDR
 	sw      t1, VI_ORIGIN(t0)
@@ -320,33 +325,34 @@ await_input:  // byte() -- returns the index of the next key pressed
 render:  // void()
 	la      t0, render_flag
 	lb      t1, 0(t0)
-	bnel    t1, zero, start_render
+	bnel    t1, zero, render_start
 	sb      zero, 0(t0)
 	jr      ra
-start_render:
+render_start:
 	la      t0, ch8_framebuffer
-	li      t1, RDRAM_FRAMEBUFFER_ADDR
+	li      t1, RDRAM_FRAMEBUFFER_ADDR + N64_RENDER_OFFSET_Y * N64_WIDTH * N64_BPP
 	addi    t2, t0, CH8_FRAMEBUFFER_SIZE
 render_loop:
-	lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or -1 for 8/8/8/8
-	move    t4, t1
-	addi    t5, t4, 9*N64_WIDTH*N64_BPP
-render_loop_y:
-	sd      t3, 0(t4)
-	sd      t3, 8(t4)
-	sd      t3, 16(t4)
-	sd      t3, 24(t4)
-	sd      t3, 32(t4)  // 40 bytes for 10 8/8/8/8 pixels
-	bnel    t4, t5, render_loop_y
-	addi    t4, t4, N64_WIDTH*N64_BPP
-	addi    t0, t0, 1
-	//assert(ch8_framebuffer % CH8_WIDTH == 0)
-	andi    t6, t0, CH8_WIDTH-1
-	beql    t6, zero, new_y_line
-	addi    t1, t1, 9*N64_WIDTH*N64_BPP
-new_y_line:
+	lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff for 5/5/5/3
+	lb      t4, 1(t0)  // two ch8 pixels at a time, for more efficient storing
+	move    t5, t1
+	addi    t6, t1, N64_WIDTH * N64_BPP * (GFX_SCALE - 1)
+render_loop_n64_y:
+	sd      t3, 0(t5)
+	sd      t3, 8(t5)
+	sw      t3, 16(t5) // 20 bytes for 10 5/5/5/3 pixels
+	sw      t4, 20(t5)
+	sd      t4, 24(t5)
+	sd      t4, 32(t5)
+	bnel    t5, t6, render_loop_n64_y
+	addi    t5, t5, N64_WIDTH * N64_BPP
+	addi    t0, t0, 2
+	andi    t7, t0, CH8_WIDTH - 1
+	beql    t7, zero, new_ch8_y_line
+	addi    t1, t1, N64_WIDTH * N64_BPP * (GFX_SCALE - 1)
+new_ch8_y_line:
 	bnel    t0, t2, render_loop
-	addi    t1, t1, 10*N64_BPP
+	addi    t1, t1, 2 * N64_BPP * GFX_SCALE
 	jr      ra
 	nop
 
@@ -1005,68 +1011,3 @@ ch8_rom:
 	insert {ch8_rom_file}
 
 data_end:
-
-
-adc:
-	add     t0, a, op
-	add     t0, a, carry
-	ori     t1, zero, $ff
-	slt     carry, t1, t0
-	xor     t1, a, t0
-	xor     t2, op, t0
-	and     t1, t1, t2
-	andi    a, t0, $ff
-	slti    status_zero, a, 1
-
-and:
-	and     a, a, op
-	slti    status_zero, a, 1
-	jr      ra
-	srl     status_neg, a, 7
-
-asl_a:
-	srl     status_carry, a, 7
-	sll     a, a, 1
-	slti    status_zero, a, 1
-	jr      ra
-	srl     status_neg, a, 7
-
-asl_m:
-	srl     status_carry, op, 7
-	sll     op, op, 1
-	slti    status_zero, op, 1
-	jr      ra
-	srl     status_neg, op, 7
-
-bcc:
-	beq     status_carry, zero, bcc_end
-	andi    t0, addr, $ff
-	andi    t1, pc, $ff00
-	add     pc, pc, t0
-	andi    t2, pc, $ff00
-	bnel    t1, t2, bcc_end
-	addi    cycles, cycles, 2
-	addi    cycles, cycles, 1
-bcc_end:
-	jr      ra
-	nop
-
-6502_bit:
-	and     t0, a, op
-	slti    status_zero, t0, 1
-	srl     t0, op, 6
-	andi    status_overflow, t0, 1
-	jr      ra
-	srl     status_neg, op, 1
-
-6502_clc:
-	jr      ra
-	move    status_carry, zero
-
-6502_cld:
-	jr      ra
-	move    status_decimal, zero
-
-6502_cmp:
-	sub     t0, a op
-	slti    status_carry, t0, -1

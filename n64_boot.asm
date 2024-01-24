@@ -2,8 +2,9 @@ arch n64.cpu
 endian msb
 
 boot:
+	// load the entrypoint from the header
 	lui     s0, $A400
-	lw      s0, 8(s0)               // entrypoint
+	lw      s0, 8(s0)
 
 	// copy N64 ROM from offset $1000 to RDRAM at offset entrypoint
 	lui     t0, PI_BASE
@@ -23,7 +24,7 @@ await_pi_dma:
 	nop
 	sw      t1, PI_STATUS(t0)
 
-	// jump to entry point
+	// jump to entrypoint
 	jr      s0
 	nop
 
