@@ -10,7 +10,7 @@ db $40 // Initial PI_BSB_DOM1_PGS_REG Value
 dw $000F // Initial Clock Rate
 
 // VECTOR
-dw instr_begin // Boot Address Offset
+dw start // Boot Address Offset
 dw $1444 // Release Offset
 
 // COMPLEMENT CHECK & CHECKSUM

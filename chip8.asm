@@ -48,9 +48,7 @@ constant N64_RENDER_OFFSET_Y = (N64_HEIGHT - CH8_HEIGHT * GFX_SCALE) / 2
 
 assert(CH8_WIDTH * GFX_SCALE == N64_WIDTH)
 
-instr_begin:
-
-main:
+start:
 	li      sp, RDRAM_STACK_ADDR
 	jal     init_n64
 	nop
@@ -108,17 +106,6 @@ install_exception_handler_loop:
 	bnel    t0, t2, install_exception_handler_loop
 	addi    t1, t1, 4
 
-	// cache instructions. The N64 i-cache is only 16 KiB but our code should be smaller than that
-	// assert(instr_end - instr_begin <= N64_ICACHE_SIZE)
-	la      t0, instr_begin
-	la      t1, instr_end
-cache_instrs_loop:
-	cache   $14, 0(t0)                      // Fill
-	addiu   t0, t0, N64_ICACHE_LINE_SIZE
-	subu    t2, t1, t0
-	bgtz    t2, cache_instrs_loop
-	nop
-
 	// enable interrupts
 	ori     t0, zero, $1401
 	mtc0    t0, CP0_STATUS                 // Set ie+im2+im4 (enable MI and 'reset' interrupts)
@@ -127,11 +114,33 @@ cache_instrs_loop:
 	nop
 
 exception_handler_180:  // void()
+	addiu	sp, sp, -144  // TODO: also save 'at'?
+	sd		v0, 0(sp)
+	sd		v1, 8(sp)
+	sd		a0, 16(sp)
+	sd		a1, 24(sp)
+	sd		a2, 32(sp)
+	sd		a3, 40(sp)
+	sd		t0, 48(sp)
+	sd		t1, 56(sp)
+	sd		t2, 64(sp)
+	sd		t3, 72(sp)
+	sd		t4, 80(sp)
+	sd		t5, 88(sp)
+	sd		t6, 96(sp)
+	sd		t7, 104(sp)
+	sd		t8, 112(sp)
+	sd		t9, 120(sp)
+	mflo	t0
+	mfhi	t1
+	sd		t0, 128(sp)
+	sd	    t1, 136(sp)
 	mfc0    t0, CP0_CAUSE
 	andi    t1, t0, $7c                    // extract exc_code
 	beq     t1, zero, handle_interrupt_exception
 	nop                                    // TODO: handle remaining exceptions
-	eret
+	j		exception_handler_180_exit
+	nop
 handle_interrupt_exception:
 	addiu   sp, sp, -8
 	sd      ra, 0(sp)
@@ -144,8 +153,8 @@ handle_interrupt_exception:
 	bgezall t1, handle_system_reset_interrupt
 	nop
 	ld      ra, 0(sp)
+	j		exception_handler_180_exit
 	addiu   sp, sp, 8
-	eret
 handle_mi_interrupt:
 	addiu   sp, sp, -8
 	sd      ra, 0(sp)
@@ -175,6 +184,29 @@ handle_vi_interrupt:
 	ld      ra, 0(sp)
 	j       poll_input
 	addiu   sp, sp, 8
+exception_handler_180_exit:
+	ld		t0, 128(sp)
+	ld	    t1, 136(sp)
+	mtlo	t0
+	mthi	t1
+	ld		v0, 0(sp)
+	ld		v1, 8(sp)
+	ld		a0, 16(sp)
+	ld		a1, 24(sp)
+	ld		a2, 32(sp)
+	ld		a3, 40(sp)
+	ld		t0, 48(sp)
+	ld		t1, 56(sp)
+	ld		t2, 64(sp)
+	ld		t3, 72(sp)
+	ld		t4, 80(sp)
+	ld		t5, 88(sp)
+	ld		t6, 96(sp)
+	ld		t7, 104(sp)
+	ld		t8, 112(sp)
+	ld		t9, 120(sp)
+	addiu	sp, sp, 144
+	eret
 exception_handler_180_end:
 
 init_chip8:  // void()
@@ -830,9 +862,8 @@ opcode_Fx29:  // void(byte x)
 	addu    a0, a0, v
 	lbu     a0, 0(a0)
 	sll     index, a0, 2
-	addu    index, index, a0
 	jr      ra
-	andi    index, index, $fff
+	addu    index, index, a0
 
 // LD B, Vx --  Store BCD representation of Vx in memory locations I, I+1, and I+2
 opcode_Fx33:  // void(byte x)
@@ -911,10 +942,6 @@ panic:  // void()
 play_audio:  // TODO
 	jr      ra
 	nop
-
-align(N64_ICACHE_SIZE)
-instr_end:
-data_begin:
 
 do_run:
 	db 1
@@ -1009,5 +1036,3 @@ assert(CH8_ROM_SIZE > 0 && CH8_ROM_SIZE <= MAX_CH8_ROM_SIZE)
 align(8)
 ch8_rom:
 	insert {ch8_rom_file}
-
-data_end:
