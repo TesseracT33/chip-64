@@ -14,8 +14,8 @@ dw start // Boot Address Offset
 dw $1444 // Release Offset
 
 // COMPLEMENT CHECK & CHECKSUM
-db "CRC1" // CRC1: COMPLEMENT CHECK
-db "CRC2" // CRC2: CHECKSUM
+dw $18CAF15E // CRC1: COMPLEMENT CHECK
+dw $0FA65501 // CRC2: CHECKSUM
 
 dd 0 // UNUSED
 

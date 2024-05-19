@@ -1,6 +1,6 @@
 arch n64.cpu
 endian msb
-output "chip64.z64", create
+output "../chip64.z64", create
 
 // Execution starts in PIF ROM. Consequently, the first $1000 bytes of the cartridge have been copied to SP DMEM ($A4000000),
 // and execution continues at $A4000040. The $40 bytes skipped constitute the ROM header. The further $fc0 bytes is the IPL3 
@@ -18,8 +18,7 @@ include "n64.inc"
 include "util.inc"
 
 include "n64_header.asm"
-include "n64_boot.asm"
-//insert "BOOTCODE.BIN"
+insert "../lib/NUS-CIC-6102.bin"
 
 // Reserve some n64 registers for the chip-8 state
 constant pc = fp
@@ -356,9 +355,8 @@ poll_input:  // void()
 	sb      t4, 12(t3)   // RT
 	srl     t2, t2, 1
 	andi    t4, t2, 1
-	sb      t4, 13(t3)   // LT
 	jr      ra
-	nop
+	sb      t4, 13(t3)   // LT
 
 await_input:  // byte() -- returns the index of the next key pressed
 	jr      ra // TODO
@@ -1032,7 +1030,7 @@ instr_jump_table_8000:
 	dw opcode_8xyE
 	dw panic
 
-define ch8_rom_file = "game.ch8"
+define ch8_rom_file = "../game.ch8"
 assert(file.exists({ch8_rom_file}))
 constant CH8_ROM_SIZE = file.size({ch8_rom_file})
 assert(CH8_ROM_SIZE > 0 && CH8_ROM_SIZE <= MAX_CH8_ROM_SIZE)
