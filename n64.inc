@@ -47,6 +47,9 @@ constant PI_RD_LEN = $8
 constant PI_WR_LEN = $c
 constant PI_STATUS = $10
 
+constant PIF_BASE = $bfc0
+constant PIF_RAM = $7c0
+
 constant VI_BASE = $a440
 constant VI_CTRL = $0
 constant VI_ORIGIN = $4

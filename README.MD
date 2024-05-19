@@ -6,4 +6,3 @@
 
 ## Useful test roms
 	* https://github.com/Timendus/chip8-test-suite/
-	* https://github.com/corax89/chip8-test-rom

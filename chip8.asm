@@ -3,14 +3,14 @@ endian msb
 output "chip64.z64", create
 
 // Execution starts in PIF ROM. Consequently, the first $1000 bytes of the cartridge have been copied to SP DMEM ($A4000000),
-// and execution continues at $A4000040. The $40 bytes skipped constitute the ROM header. The further $fc0 bytes is the boot code,
-// part of the N64 ROM. The boot code will perform a DMA of length $100000 bytes from $10001000 (N64 ROM offset $1000) to the address
-// specified in the header -- the word at byte offset 8. It will also write some code to the beginning of RDRAM before doing the DMA, 
-// so the entry point should not be $80000000. $80001000 seems to work well, also offsetting exactly the size of the header + boot code.  
-// After the DMA, the PC is set to this address.
+// and execution continues at $A4000040. The $40 bytes skipped constitute the ROM header. The further $fc0 bytes is the IPL3 
+// boot code, part of the N64 ROM. The IPL3 performs a PI DMA of length $100000 bytes from $10001000 (N64 ROM offset $1000) to 
+// the RDRAM address specified in the header -- the word at byte offset 8. Before doing so, it also writes some code to the 
+// beginning of RDRAM, so the entry point should not be $80000000. $80001000 seems to work well, also offsetting exactly the
+// size of the header + IPL3. After the DMA, the PC is set to this address.
 
 constant N64_ROM_SIZE = $100000
-fill N64_ROM_SIZE + $1000       // set rom size. minimum size (?) since the boot code will do a PI DMA of this size
+fill N64_ROM_SIZE + $1000       // set rom size. minimum size (?) since the IPL3 will do a PI DMA of this size
 origin $0                       // rom location
 base $80000000                  // signed displacement against origin, used when computing the pc value for labels
 
@@ -19,7 +19,9 @@ include "util.inc"
 
 include "n64_header.asm"
 include "n64_boot.asm"
+//insert "BOOTCODE.BIN"
 
+// Reserve some n64 registers for the chip-8 state
 constant pc = fp
 constant index = k0
 constant v = k1
@@ -50,6 +52,11 @@ assert(CH8_WIDTH * RENDER_SCALE == N64_WIDTH)
 assert(CH8_HEIGHT * RENDER_SCALE + 2 * N64_RENDER_OFFSET_Y == N64_HEIGHT)
 
 start:
+    // Stop N64 from crashing (infinite NMI) five seconds after boot
+    lui     t0, PIF_BASE
+    ori     t1, zero, 8
+    sw      t1, PIF_RAM+$3c(t0)
+
 	li      sp, RDRAM_STACK_ADDR
 	jal     init_n64
 	nop
@@ -289,7 +296,7 @@ poll_input:  // void()
 	// byte 1: result length (4)
 	// byte 2: command (1; Controller State)
 	// byte 7: signal end of commands ($fe)
-	lui     t0, $bfc0
+	lui     t0, PIF_BASE
 	li      t1, $01040100
 	sw      t1, $7c0(t0)
 	ori     t1, zero, $fe
@@ -871,6 +878,7 @@ opcode_Fx29:  // void(byte x)
 	addu    index, index, a0
 
 // LD B, Vx --  Store BCD representation of Vx in memory locations I, I+1, and I+2
+// Does not change I.
 opcode_Fx33:  // void(byte x)
 	addu    a0, a0, v
 	lbu     a0, 0(a0)
@@ -880,29 +888,24 @@ opcode_Fx33:  // void(byte x)
 	mfhi    t2                    // Vx % 10
 	div     t1, t0
 	mflo    t0                    // Vx / 100
-	addu    t1, ch8_mem, index
-	addiu   t3, index, -$ffe
-	bgez    t3, index_wrap
-	sb      t0, 0(t1)
-	mfhi    t0                    // (Vx / 10) % 10
-	sb      t0, 1(t1)
-	sb      t2, 2(t1)
-	addiu   index, index, 3
+	mfhi    t1                    // (Vx / 10) % 10
+	addu    t3, ch8_mem, index
+	slti    t4, index, CH8_MEM_SIZE-2
+	beq     t4, zero, opcode_Fx33_index_wrap
+	sb      t0, 0(t3)
+	sb      t1, 1(t3)
 	jr      ra
-	andi    index, index, $fff
-index_wrap:
-	addiu   index, index, 1
-	andi    index, index, $fff
-	mfhi    t0                    // (Vx / 10) % 10
-	addu    t1, ch8_mem, index
-	sb      t0, 0(t1)
-	addiu   index, index, 1
-	andi    index, index, $fff
-	addu    t1, ch8_mem, index
-	sb      t2, 0(t1)
-	addiu   index, index, 1
-	jr      ra
-	andi    index, index, $fff
+	sb      t2, 2(t3)
+opcode_Fx33_index_wrap:
+	addu    t3, index, 1
+    andi    t3, t3, $fff
+    addu    t3, t3, ch8_mem
+    sb      t1, 0(t3)
+    addu    t3, index, 2
+    andi    t3, t3, $fff
+    addu    t3, t3, ch8_mem
+    jr      ra
+    sb      t2, 0(t3)
 
 // LD [I], Vx -- Store registers V0 through Vx in memory starting at location I
 opcode_Fx55:  // void(byte x)
