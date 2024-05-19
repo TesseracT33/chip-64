@@ -2,7 +2,7 @@ arch n64.cpu
 endian msb
 output "chip64.z64", create
 
-// Execution starts in PIF ROM. Consequently, the first $1000 bytes of the cartridge has been copied to SP DMEM ($A4000000),
+// Execution starts in PIF ROM. Consequently, the first $1000 bytes of the cartridge have been copied to SP DMEM ($A4000000),
 // and execution continues at $A4000040. The $40 bytes skipped constitute the ROM header. The further $fc0 bytes is the boot code,
 // part of the N64 ROM. The boot code will perform a DMA of length $100000 bytes from $10001000 (N64 ROM offset $1000) to the address
 // specified in the header -- the word at byte offset 8. It will also write some code to the beginning of RDRAM before doing the DMA, 
@@ -33,7 +33,6 @@ constant CH8_INSTRS_PER_VSYNC = 10
 constant CH8_MEM_SIZE = $1000
 constant CH8_ROM_START_ADDR = $200
 constant FONTSET_SIZE = $50
-constant GFX_SCALE = 10
 constant MAX_CH8_ROM_SIZE = CH8_MEM_SIZE - CH8_ROM_START_ADDR
 constant N64_BPP = 2
 constant N64_HEIGHT = 480
@@ -42,11 +41,13 @@ constant N64_WIDTH = 640
 constant RDRAM_FRAMEBUFFER_ADDR = (RDRAM_ROM_ADDR + N64_ROM_SIZE + N64_STACK_SIZE) | $A0000000
 constant RDRAM_STACK_ADDR = (RDRAM_ROM_ADDR + N64_ROM_SIZE + N64_STACK_SIZE - 8) | $80000000
 constant RDRAM_ROM_ADDR = 0
+constant RENDER_SCALE = 10
 constant VI_V_SYNC_LINE = 512
 
-constant N64_RENDER_OFFSET_Y = (N64_HEIGHT - CH8_HEIGHT * GFX_SCALE) / 2
+constant N64_RENDER_OFFSET_Y = (N64_HEIGHT - CH8_HEIGHT * RENDER_SCALE) / 2
 
-assert(CH8_WIDTH * GFX_SCALE == N64_WIDTH)
+assert(CH8_WIDTH * RENDER_SCALE == N64_WIDTH)
+assert(CH8_HEIGHT * RENDER_SCALE + 2 * N64_RENDER_OFFSET_Y == N64_HEIGHT)
 
 start:
 	li      sp, RDRAM_STACK_ADDR
@@ -264,7 +265,7 @@ load_rom_loop:
 	la      v, v_data
 	sd      zero, 0(v)
 	sd      zero, 8(v)
-	la      t0, render_flag
+	la      t0, needs_render
 	lb      zero, 0(t0)
 
 	j       clear_framebuffer
@@ -277,8 +278,10 @@ clear_framebuffer_loop:
 	sd      zero, 0(t0)
 	bnel    t0, t1, clear_framebuffer_loop
 	addiu   t0, t0, 8
+	la      t0, needs_render
+	ori		t1, zero, 1
 	jr      ra
-	nop
+	lb      t1, 0(t0)
 
 poll_input:  // void()
 	// write to start of PIF RAM bytes 0-2, 7
@@ -355,20 +358,20 @@ await_input:  // byte() -- returns the index of the next key pressed
 	nop
 
 render:  // void()
-	la      t0, render_flag
+	la      t0, needs_render
 	lb      t1, 0(t0)
 	bnel    t1, zero, render_start
 	sb      zero, 0(t0)
 	jr      ra
 render_start:
 	la      t0, ch8_framebuffer
-	li      t1, RDRAM_FRAMEBUFFER_ADDR + N64_RENDER_OFFSET_Y * N64_WIDTH * N64_BPP
-	addi    t2, t0, CH8_FRAMEBUFFER_SIZE
+	addiu   t1, t0, CH8_FRAMEBUFFER_SIZE
+	li      t2, RDRAM_FRAMEBUFFER_ADDR + N64_RENDER_OFFSET_Y * N64_WIDTH * N64_BPP
 render_loop:
-	lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff for 5/5/5/3
+	lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff... for 5/5/5/3
 	lb      t4, 1(t0)  // two ch8 pixels at a time, for more efficient storing
-	move    t5, t1
-	addi    t6, t1, N64_WIDTH * N64_BPP * (GFX_SCALE - 1)
+	move    t5, t2
+	addiu   t6, t2, N64_WIDTH * N64_BPP * (RENDER_SCALE - 1)
 render_loop_n64_y:
 	sd      t3, 0(t5)
 	sd      t3, 8(t5)
@@ -376,15 +379,15 @@ render_loop_n64_y:
 	sw      t4, 20(t5)
 	sd      t4, 24(t5)
 	sd      t4, 32(t5)
-	bnel    t5, t6, render_loop_n64_y
-	addi    t5, t5, N64_WIDTH * N64_BPP
-	addi    t0, t0, 2
+	bnel    t5, t6, render_loop_n64_y    // render the current ch8 pixels vertically repeatedly
+	addiu   t5, t5, N64_WIDTH * N64_BPP
+	addiu   t0, t0, 2                            // advance two ch8 pixels
 	andi    t7, t0, CH8_WIDTH - 1
 	beql    t7, zero, new_ch8_y_line
-	addi    t1, t1, N64_WIDTH * N64_BPP * (GFX_SCALE - 1)
+	addiu   t2, t2, N64_WIDTH * N64_BPP * (RENDER_SCALE - 1)
 new_ch8_y_line:
-	bnel    t0, t2, render_loop
-	addi    t1, t1, 2 * N64_BPP * GFX_SCALE
+	bnel    t0, t1, render_loop
+	addiu   t2, t2, 2 * N64_BPP * RENDER_SCALE   // advance two ch8 pixels
 	jr      ra
 	nop
 
@@ -494,10 +497,11 @@ opcode_3xnn:  // void(hword opcode)
 	addu    t0, t0, v
 	lbu     t0, 0(t0)
 	andi    t1, a0, $ff
-	beql    t0, t1, inc_pc
-	nop
+	beql    t0, t1, opcode_3xnn_end
+	addiu	pc, pc, 2
+opcode_3xnn_end:
 	jr      ra
-	nop
+	andi	pc, pc, $fff
 
 // SNE Vx, byte -- Skip next instruction if Vx != nn
 opcode_4xnn:  // void(hword opcode)
@@ -506,10 +510,11 @@ opcode_4xnn:  // void(hword opcode)
 	addu    t0, t0, v
 	lbu     t0, 0(t0)
 	andi    t1, a0, $ff
-	bnel    t0, t1, inc_pc
-	nop
+	bnel    t0, t1, opcode_4xnn_end
+	addiu	pc, pc, 2
+opcode_4xnn_end:
 	jr      ra
-	nop
+	andi	pc, pc, $fff
 
 // SE Vx, Vy -- Skip next instruction if Vx == Vy.
 opcode_5xy0:  // void(hword opcode)
@@ -525,10 +530,11 @@ opcode_5xy0:  // void(hword opcode)
 	addu    t1, t1, v
 	lb      t1, 0(t1)
 
-	beql    t0, t1, inc_pc
-	nop
+	beql    t0, t1, opcode_5xy0_end
+	addiu	pc, pc, 2
+opcode_5xy0_end:
 	jr      ra
-	nop
+	andi	pc, pc, $fff
 
 // LD Vx, byte -- Set Vx = nn
 opcode_6xnn:  // void(hword opcode)
@@ -658,10 +664,11 @@ opcode_9xy0:  // void(hword opcode)
 	andi    t1, t1, $f
 	addu    t1, t1, v
 	lb      t1, 0(t1)
-	bnel    t0, t1, inc_pc
-	nop
+	bnel    t0, t1, opcode_9xy0_end
+	addiu	pc, pc, 2
+opcode_9xy0_end:
 	jr      ra
-	nop
+	andi	pc, pc, $fff
 
 // Set I = nnn
 opcode_Annn:  // void(hword opcode)
@@ -689,66 +696,64 @@ opcode_Cxnn:  // void(hword opcode)
 	jr      ra
 	sb      t0, 0(t1)
 
-// DRW Vx, Vy, nibble -- Draw sprite of height n (n bytes) starting at memory location I at coordinates (Vx, Vy), and set VF = collision
+// DRW Vx, Vy, n -- Draw sprite of height n (n bytes) and width 8
+// starting at memory location I at coordinates (Vx, Vy), and set VF = collision
+// I is not changed.
 opcode_Dxyn:  // void(hword opcode)
-	move    a2, zero        // collision
-	srl     t0, a0, 8
-	andi    t0, t0, $f
-	addu    t0, t0, v
-	lb      t0, 0(t0)
-	andi    t0, t0, CH8_WIDTH-1  // vx
-	srl     t1, a0, 4
+	andi    t0, a0, $f             // height
+	beq     t0, zero, draw_end_no_render
+	move    a3, zero               // collision
+	srl     t1, a0, 8
 	andi    t1, t1, $f
 	addu    t1, t1, v
-	lb      t1, 0(t1)
-	andi    t1, t1, CH8_HEIGHT-1 // vy
-	andi    t2, a0, $f           // height
-	beq     t2, zero, draw_end
-	addu    t2, t2, t1           // ymax
-	slti    t3, t2, CH8_HEIGHT+1
-	beql    t3, zero, calc_width
-	ori     t2, zero, CH8_HEIGHT
-calc_width:
-	ori     t3, zero, CH8_WIDTH 
-	subu    t3, t3, t0
-	slti    t4, t3, 9
-	beql    t4, zero, draw
-	ori     t3, zero, 8 // width
-draw:
+	lb      t1, 0(t1)			   // Vx
+	andi    t1, t1, CH8_WIDTH-1    // x
+	srl     t2, a0, 4
+	andi    t2, t2, $f
+	addu    t2, t2, v
+	lb      t2, 0(t2)              // Vy
+	andi    t2, t2, CH8_HEIGHT-1   // y
+	move	t3, zero               // yline (0..n)
 	la      a0, ch8_framebuffer
 	ori     a1, zero, $80
+	ori		a2, zero, 8
 draw_loop_begin:
-	addiu   t4, ch8_mem, index
-	addiu   index, index, 1
-	lb      t4, 0(t4)  // x-strip
-	sll     t5, t1, 6
-	addu    t5, t5, t0 // framebuffer pos
-	move    t6, zero   // x
+	addu	t4, index, t3          // index + yline
+	andi	t4, t4, $fff
+	addu    t4, t4, ch8_mem
+	lb      t4, 0(t4)              // x-strip = memory[I + yline]
+	sll     t5, t2, 6              // y * 64
+	move	t6, t1                 // x
+	move    t7, zero               // xline (0..8)
 draw_strip_begin:
-	srlv    t7, a1, t6
-	and     t7, t7, t4
-	beq     t7, zero, draw_pixel_end
-	addiu   t6, t6, 1
-	addu    t7, a0, t5
-	lb      t8, 0(t7)
-	beq     t8, zero, draw_pixel
-	xori    t8, t8, $ff
-	ori     a2, a2, 1
+	srlv    t8, a1, t7
+	and     t8, t8, t4             // x-strip & (0x80 >> xline)
+	beq     t8, zero, draw_pixel_end
+	addiu   t7, t7, 1
+	addu    t8, a0, t5             // gfx + y * 64
+	addu	t8, t8, t6             // gfx + y * 64 + x
+	lb      t9, 0(t8)              // gfx[y * 64 + x]
+	bnel    t9, zero, draw_pixel
+	ori     a3, a3, 1              // set collision
 draw_pixel:
-	sb      t8, 0(t7)
+	xori    t9, t9, $ff
+	sb      t9, 0(t8)
 draw_pixel_end:
-	bnel    t6, t3, draw_strip_begin
-	addiu   t5, t5, 1
+	addiu   t6, t6, 1
+	bnel    t7, a2, draw_strip_begin
+	andi	t6, t6, CH8_WIDTH-1
 draw_strip_end:
-	addiu   t1, t1, 1
-	bne     t1, t2, draw_loop_begin
-	andi    index, index, $fff
+	addiu   t2, t2, 1
+	addiu	t3, t3, 1
+	bnel    t3, t0, draw_loop_begin
+	andi    t2, t2, CH8_HEIGHT-1
 draw_end:
-	sb      a2, $f(v)
-	la      t0, render_flag
+	la      t0, needs_render
 	ori     t1, zero, 1
-	jr      ra
 	sb      t1, 0(t0)
+draw_end_no_render:
+	jr      ra
+	sb      a3, $f(v)
 
 opcode_Exnn:  // void(hword opcode)
 	andi    t0, a0, $ff
@@ -929,11 +934,6 @@ opcode_Fx65_loop_start:
 	jr      ra
 	nop
 
-inc_pc:  // void()
-	addiu   pc, pc, 2
-	jr      ra
-	andi    pc, pc, $fff
-
 panic:  // void()
 	break
 	jr      ra
@@ -975,7 +975,7 @@ delay_timer:
 sound_timer:
 	db 60
 
-render_flag:
+needs_render:
 	db 0
 
 align(8)
