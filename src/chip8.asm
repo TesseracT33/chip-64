@@ -102,16 +102,28 @@ init_n64:  // void()
 	ori     t1, zero, $100*N64_HEIGHT/60
 	sw      t1, VI_Y_SCALE(t0)
 
-	// install exception handler at $8000'0180
+	// Install exception handler at $8000'0180.
+	// This area is cacheable, so the d-cache will "intercept" the writes,
+	// while the i-cache is unaware. Thus, we must perform d-cache write-back,
+	// and i-cache fill.
 	la      t0, exception_handler_180
 	li      t1, $80000180
-	addi    t2, t0, exception_handler_180_end - exception_handler_180
+	addiu   t2, t0, exception_handler_180_end - exception_handler_180
 install_exception_handler_loop:
-	lw      t3, 0(t0)
-	sw      t3, 0(t1)
-	addi    t0, t0, 4
+	ld      t3, 0(t0)
+	sd      t3, 0(t1)
+	ld      t3, 8(t0)
+	sd      t3, 8(t1)
+	ld      t3, 16(t0)
+	sd      t3, 16(t1)
+	ld      t3, 24(t0)
+	sd      t3, 24(t1)
+	cache	$19, 0(t1)          // D-Cache Hit_Write_Back (16 bytes)
+	cache	$19, 16(t1)         // D-Cache Hit_Write_Back (16 bytes)
+	cache 	$14, 0(t1)          // I-Cache Fill (32 bytes)
+	addiu   t0, t0, 32
 	bnel    t0, t2, install_exception_handler_loop
-	addi    t1, t1, 4
+	addiu   t1, t1, 32
 
 	// enable interrupts
 	ori     t0, zero, $1401
@@ -120,6 +132,7 @@ install_exception_handler_loop:
 	jr      ra
 	nop
 
+align(32)
 exception_handler_180:  // void()
 	addiu	sp, sp, -144  // TODO: also save 'at'?
 	sd		v0, 0(sp)
@@ -214,6 +227,8 @@ exception_handler_180_exit:
 	ld		t9, 120(sp)
 	addiu	sp, sp, 144
 	eret
+
+align(32)
 exception_handler_180_end:
 
 init_chip8:  // void()
@@ -306,7 +321,6 @@ poll_input:  // void()
 	sw      t1, $7fc(t0)
 
 	// TODO: how long to wait before reading result?
-
 	// read the result (bytes 3-6), being the controller state. best to stick to aligned word reads here (?)
 	// byte 3: A B Z S dU dD dL dR
 	// byte 4: RST - LT RT cU cD cL cR
