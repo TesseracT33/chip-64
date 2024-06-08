@@ -1,1 +1,1 @@
-bass chip8.asm
+bass src/chip8.asm
