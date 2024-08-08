@@ -63,8 +63,8 @@ start:
     nop
     jal     run
     nop
-main_end:
-    j       main_end
+start_end:
+    j       start_end
     nop
 
 init_n64:  // void()
@@ -104,7 +104,7 @@ init_n64:  // void()
 
     // Install exception handler at $8000'0180.
     // This area is cacheable, so the d-cache will "intercept" the writes,
-    // while the i-cache is unaware. Thus, we must perform d-cache write-back,
+    // while the i-cache is unaware. Thus, we must perform d-cache write-back
     // and i-cache fill.
     la      t0, exception_handler_180
     li      t1, $80000180
@@ -315,65 +315,123 @@ poll_input:  // void()
     sw      t1, $7c0(t0)
     lli     t1, $fe
     sw      t1, $7c4(t0)
-
-    // write 1 to the PIF RAM control byte (offset $3f), triggering the joybus protocol
     lli     t1, 1
-    sw      t1, $7fc(t0)
-
-    // TODO: how long to wait before reading result?
+    sw      t1, $7fc(t0)    // trigger the joybus protocol
+    lli     t1, 10000
+wait_joybus:                // TODO: how long to wait before reading result?
+    bgez    t1, wait_joybus
+    addiu   t1, t1, -1
     // read the result (bytes 3-6), being the controller state. best to stick to aligned word reads here (?)
     // byte 3: A B Z S dU dD dL dR
     // byte 4: RST - LT RT cU cD cL cR
-    // byte 5: x-axis
-    // byte 6: y-axis
+    // byte 5: X-axis
+    // byte 6: Y-axis
     lw      t1, $7c0(t0)
     lw      t2, $7c4(t0)
     la      t3, key
-    andi    t4, t1, 1
-    sb      t4, 0(t3)   // dR
+    ld      t4, 0(key)
+    ld      t5, 8(key)
+    andi    t6, t1, 1
+    sb      t6, 0(t3)   // dR
     srl     t1, t1, 1
-    andi    t4, t1, 1
-    sb      t4, 1(t3)   // dL
+    andi    t6, t1, 1
+    sb      t6, 1(t3)   // dL
     srl     t1, t1, 1
-    andi    t4, t1, 1
-    sb      t4, 2(t3)   // dD
-    srl     t1, t1, 2
-    andi    t4, t1, 1
-    sb      t4, 3(t3)   // dU
+    andi    t6, t1, 1
+    sb      t6, 2(t3)   // dD
     srl     t1, t1, 1
-    andi    t4, t1, 1
-    sb      t4, 4(t3)   // S
+    andi    t6, t1, 1
+    sb      t6, 3(t3)   // dU
     srl     t1, t1, 1
-    andi    t4, t1, 1
-    sb      t4, 5(t3)   // Z
+    andi    t6, t1, 1
+    sb      t6, 4(t3)   // S
     srl     t1, t1, 1
-    andi    t4, t1, 1
-    sb      t4, 6(t3)   // B
+    andi    t6, t1, 1
+    sb      t6, 5(t3)   // Z
     srl     t1, t1, 1
-    andi    t4, t1, 1
-    sb      t4, 7(t3)   // A
+    andi    t6, t1, 1
+    sb      t6, 6(t3)   // B
+    srl     t1, t1, 1
+    andi    t6, t1, 1
+    sb      t6, 7(t3)   // A
+    move    t7, t2
     srl     t2, t2, 24
-    andi    t4, t2, 1
-    sb      t4, 8(t3)   // cR
+    andi    t6, t2, 1
+    sb      t6, 8(t3)   // cR
     srl     t2, t2, 1
-    andi    t4, t2, 1
-    sb      t4, 9(t3)   // cL
+    andi    t6, t2, 1
+    sb      t6, 9(t3)   // cL
     srl     t2, t2, 1
-    andi    t4, t2, 1
-    sb      t4, 10(t3)   // cD
+    andi    t6, t2, 1
+    sb      t6, 10(t3)   // cD
     srl     t2, t2, 1
-    andi    t4, t2, 1
-    sb      t4, 11(t3)   // cU
+    andi    t6, t2, 1
+    sb      t6, 11(t3)   // cU
     srl     t2, t2, 1
-    andi    t4, t2, 1
-    sb      t4, 12(t3)   // RT
+    andi    t6, t2, 1
+    sb      t6, 12(t3)   // RT
     srl     t2, t2, 1
-    andi    t4, t2, 1
+    andi    t6, t2, 1
+    sb      t6, 13(t3)   // LT
+    andi    t8, t7, $ff
+    slt     t8, zero, t8
+    sb      t8, 14(t3)   // Y-axis
+    srl     t7, t7, 8
+    andi    t7, t7, $ff
+    slt     t7, zero, t7
+    sb      t7, 15(t3)   // X-axis
+    la      t6, is_awaiting_input
+    lb      t6, 0(t6)
+    beql    t6, zero, poll_input_end
+    nop
+check_got_input:
+    addiu   sp, sp, -24
+    sd      ra, 0(sp)
+    move    a0, t4
+    ld      a1, 0(t3)
+    sd      t5, 8(sp)
+    ld      t0, 8(t3)
+    jal     compare_inputs
+    sd      t0, 16(sp)
+    sltiu   t0, v0, 9
+    bne     t0, zero, got_input
+    ld      a0, 8(sp)
+    jal     compare_inputs
+    ld      a1, 16(sp)
+    sltiu   t0, v0, 9
+    beq     t0, zero, check_got_input_end
+got_input:
+    la      t0, is_awaiting_input
+    sb      zero, 0(t0)
+    la      t0, key_gotten_on_input_await
+    sb      v0, 0(t0)
+check_got_input_end:
+    ld      ra, 0(sp)
+    addiu   sp, sp, 24
+poll_input_end:
     jr      ra
-    sb      t4, 13(t3)   // LT
+    nop
 
-await_input:  // byte() -- returns the index of the next key pressed
-    jr      ra // TODO
+// compares the LSBs in each byte of the dwords.
+// if lsb of new is 1 and lsb of old is 0, returns the index of that byte.
+// if none such lsb are found, returns -1.
+compare_inputs:  // byte(dword old, dword new)
+    beq     a0, a1, compare_inputs_no_match
+    lli     v0, 0
+    lli     t0, 7
+compare_inputs_loop:
+    andi    t1, a0, 1
+    andi    t2, a1, 1
+    slt     t1, t1, t2
+    bne     t1, zero, compare_inputs_end
+    srl     a0, a0, 8
+    srl     a1, a1, 8
+    bnel    v0, t0, compare_inputs_loop
+    addiu   v0, v0, 1
+compare_inputs_no_match:
+    addiu   v0, zero, -1
+compare_inputs_end:
+    jr      ra
     nop
 
 render:  // void()
@@ -387,7 +445,7 @@ render_start:
     addiu   t1, t0, CH8_FRAMEBUFFER_SIZE
     li      t2, RDRAM_FRAMEBUFFER_ADDR + N64_RENDER_OFFSET_Y * N64_WIDTH * N64_BPP
 render_loop:
-    lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff... for 5/5/5/3
+    lb      t3, 0(t0)  // src either 0 or $ff; sign-extend to 0 or $ffff for 5/5/5/3
     lb      t4, 1(t0)  // two ch8 pixels at a time, for more efficient storing
     move    t5, t2
     addiu   t6, t2, N64_WIDTH * N64_BPP * (RENDER_SCALE - 1)
@@ -690,19 +748,19 @@ opcode_9xy0_end:
     andi    pc, pc, $fff
 
 // Set I = nnn
-opcode_Annn:  // void(hword opcode)
+opcode_annn:  // void(hword opcode)
     jr      ra
     andi    index, a0, $fff
 
 // Jump to nnn + V0
-opcode_Bnnn:  // void(hword opcode)
+opcode_bnnn:  // void(hword opcode)
     lbu     t0, 0(v)
     addu    pc, a0, t0
     jr      ra
     andi    pc, pc, $fff
 
 // RND Vx, byte -- Set Vx = random byte AND nn
-opcode_Cxnn:  // void(hword opcode)
+opcode_cxnn:  // void(hword opcode)
     mfc0    t0, CP0_RANDOM
     sll     t0, t0, 3
     mfc0    t1, CP0_COUNT
@@ -718,7 +776,7 @@ opcode_Cxnn:  // void(hword opcode)
 // DRW Vx, Vy, n -- Draw sprite of height n (n bytes) and width 8
 // starting at memory location I at coordinates (Vx, Vy), and set VF = collision
 // I is not changed.
-opcode_Dxyn:  // void(hword opcode)
+opcode_dxyn:  // void(hword opcode)
     andi    t0, a0, $f             // height
     beq     t0, zero, draw_end_no_render
     move    a3, zero               // collision
@@ -774,7 +832,7 @@ draw_end_no_render:
     jr      ra
     sb      a3, $f(v)
 
-opcode_Exnn:  // void(hword opcode)
+opcode_exnn:  // void(hword opcode)
     andi    t0, a0, $ff
     srl     a0, a0, 8
     andi    a0, a0, $f
@@ -794,7 +852,7 @@ opcode_Exnn:  // void(hword opcode)
     nop
 
 // Skip the next instruction if key[Vx] != 0
-opcode_Ex9E:  // void(byte key[Vx])
+opcode_Ex9E:  // void(byte key_vx)
     slt     t0, zero, a0
     sll     t0, t0, 1
     addu    pc, pc, t0
@@ -802,41 +860,41 @@ opcode_Ex9E:  // void(byte key[Vx])
     andi    pc, pc, $fff
 
 // Skip the next instruction if key[Vx] == 0
-opcode_ExA1:  // void(byte key[Vx])
+opcode_ExA1:  // void(byte key_vx)
     slti    t0, a0, 1
     sll     t0, t0, 1
     addu    pc, pc, t0
     jr      ra
     andi    pc, pc, $fff
 
-opcode_Fxnn:  // void(hword opcode)
+opcode_fxnn:  // void(hword opcode)
     andi    t0, a0, $ff
     srl     a0, a0, 8
     andi    a0, a0, $f
     lli     t1, 7
-    beq     t0, t1, opcode_Fx07
+    beq     t0, t1, opcode_fx07
     lli     t1, $a
-    beq     t0, t1, opcode_Fx0A
+    beq     t0, t1, opcode_fx0a
     lli     t1, $15
-    beq     t0, t1, opcode_Fx15
+    beq     t0, t1, opcode_fx15
     lli     t1, $18
-    beq     t0, t1, opcode_Fx18
+    beq     t0, t1, opcode_fx18
     lli     t1, $1e
-    beq     t0, t1, opcode_Fx1E
+    beq     t0, t1, opcode_fx1e
     lli     t1, $29
-    beq     t0, t1, opcode_Fx29
+    beq     t0, t1, opcode_fx29
     lli     t1, $33
-    beq     t0, t1, opcode_Fx33
+    beq     t0, t1, opcode_fx33
     lli     t1, $55
-    beq     t0, t1, opcode_Fx55
+    beq     t0, t1, opcode_fx55
     lli     t1, $65
-    beql    t0, t1, opcode_Fx65
+    beql    t0, t1, opcode_fx65
     nop
     j       panic
     nop
 
 // LD Vx, DT -- Set Vx = delay timer.
-opcode_Fx07:  // void(byte x)
+opcode_fx07:  // void(byte x)
     addu    a0, a0, v
     la      t0, delay_timer
     lb      t0, 0(t0)
@@ -844,21 +902,22 @@ opcode_Fx07:  // void(byte x)
     sb      t0, 0(a0)
 
 // LD Vx, K --  Wait for a key press, store the value of the key in Vx
-opcode_Fx0A:  // void(byte x)
-    addiu   sp, sp, -16
-    sd      ra, 0(sp)
-    sd      s0, 8(sp)
-    jal     await_input
-    move    s0, a0
-    addu    s0, s0, v
-    sb      v0, 0(s0)
-    ld      ra, 0(sp)
-    ld      s0, 8(sp)
+opcode_fx0a:  // void(byte x)
+    la      t0, is_awaiting_input
+    lli     t1, 1
+    sb      t1, 0(t0)
+opcode_fx0a_await_input:
+    lb      t1, 0(t0)
+    bnel    t1, zero, opcode_fx0a_await_input
+    nop
+    addu    t0, a0, v
+    la      t1, key_gotten_on_input_await
+    lb      t1, 0(t1)
     jr      ra
-    addiu   sp, sp, 16
+    sb      t1, 0(t0)
 
 // LD DT, Vx -- Set delay timer = Vx
-opcode_Fx15:  // void(byte x)
+opcode_fx15:  // void(byte x)
     addu    a0, a0, v
     lb      a0, 0(a0)
     la      t0, delay_timer
@@ -866,7 +925,7 @@ opcode_Fx15:  // void(byte x)
     sb      a0, 0(t0)
 
 // LD ST, Vx -- Set sound timer = Vx
-opcode_Fx18:  // void(byte x)
+opcode_fx18:  // void(byte x)
     addu    a0, a0, v
     lb      a0, 0(a0)
     la      t0, sound_timer
@@ -874,7 +933,7 @@ opcode_Fx18:  // void(byte x)
     sb      a0, 0(t0)
 
 // ADD I, Vx -- Set I = I + Vx
-opcode_Fx1E:  // void(byte x)
+opcode_fx1e:  // void(byte x)
     addu    a0, a0, v
     lbu     a0, 0(a0)
     addu    index, index, a0
@@ -882,7 +941,7 @@ opcode_Fx1E:  // void(byte x)
     andi    index, index, $fff
 
 // LD F, Vx -- Set I = location of sprite for digit Vx, i.e., set I = Vx * 5
-opcode_Fx29:  // void(byte x)
+opcode_fx29:  // void(byte x)
     addu    a0, a0, v
     lbu     a0, 0(a0)
     sll     index, a0, 2
@@ -891,7 +950,7 @@ opcode_Fx29:  // void(byte x)
 
 // LD B, Vx --  Store BCD representation of Vx in memory locations I, I+1, and I+2
 // Does not change I.
-opcode_Fx33:  // void(byte x)
+opcode_fx33:  // void(byte x)
     addu    a0, a0, v
     lbu     a0, 0(a0)
     lli     t0, 10
@@ -903,12 +962,12 @@ opcode_Fx33:  // void(byte x)
     mfhi    t1                    // (Vx / 10) % 10
     addu    t3, ch8_mem, index
     slti    t4, index, CH8_MEM_SIZE-2
-    beq     t4, zero, opcode_Fx33_index_wrap
+    beq     t4, zero, opcode_fx33_index_wrap
     sb      t0, 0(t3)
     sb      t1, 1(t3)
     jr      ra
     sb      t2, 2(t3)
-opcode_Fx33_index_wrap:
+opcode_fx33_index_wrap:
     addu    t3, index, 1
     andi    t3, t3, $fff
     addu    t3, t3, ch8_mem
@@ -920,31 +979,31 @@ opcode_Fx33_index_wrap:
     sb      t2, 0(t3)
 
 // LD [I], Vx -- Store registers V0 through Vx in memory starting at location I
-opcode_Fx55:  // void(byte x)
+opcode_fx55:  // void(byte x)
     move    t0, zero
-opcode_Fx55_loop_start:
+opcode_fx55_loop_start:
     addu    t1, v, t0
     lb      t1, 0(t1)
     addu    t2, ch8_mem, index
     sb      t1, 0(t2)
     addiu   index, index, 1
     andi    index, index, $fff
-    bnel    t0, a0, opcode_Fx55_loop_start
+    bnel    t0, a0, opcode_fx55_loop_start
     addiu   t0, t0, 1
     jr      ra
     nop
 
 // LD Vx, [I] -- Read registers V0 through Vx from memory starting at location I
-opcode_Fx65:  // void(byte x)
+opcode_fx65:  // void(byte x)
     move    t0, zero
-opcode_Fx65_loop_start:
+opcode_fx65_loop_start:
     addu    t1, ch8_mem, index
     lb      t1, 0(t1)
     addu    t2, v, t0
     sb      t1, 0(t2)
     addiu   index, index, 1
     andi    index, index, $fff
-    bnel    t0, a0, opcode_Fx65_loop_start
+    bnel    t0, a0, opcode_fx65_loop_start
     addiu   t0, t0, 1
     jr      ra
     nop
@@ -964,11 +1023,11 @@ got_v_sync:
 
 align(8)
 ch8_memory:
-    data_array(CH8_MEM_SIZE)
+    db_array(CH8_MEM_SIZE)
 
 align(64)
 ch8_framebuffer:
-    data_array(CH8_FRAMEBUFFER_SIZE)
+    db_array(CH8_FRAMEBUFFER_SIZE)
 
 align(8)
 stack:
@@ -989,6 +1048,12 @@ sound_timer:
     db 60
 
 needs_render:
+    db 0
+
+is_awaiting_input:
+    db 0
+
+key_gotten_on_input_await:
     db 0
 
 align(8)
@@ -1016,12 +1081,12 @@ instr_jump_table:
     dw opcode_7xnn
     dw opcode_8xyn
     dw opcode_9xy0
-    dw opcode_Annn
-    dw opcode_Bnnn
-    dw opcode_Cxnn
-    dw opcode_Dxyn
-    dw opcode_Exnn
-    dw opcode_Fxnn
+    dw opcode_annn
+    dw opcode_bnnn
+    dw opcode_cxnn
+    dw opcode_dxyn
+    dw opcode_exnn
+    dw opcode_fxnn
 
 align(4)
 instr_jump_table_8000:

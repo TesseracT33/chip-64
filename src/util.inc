@@ -4,7 +4,7 @@ macro align(size) {
   }
 }
 
-macro data_array(size) {
+macro db_array(size) {
 	variable count = {size}
 	while count > 0 {
 		db 0
