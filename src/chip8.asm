@@ -70,7 +70,7 @@ start_end:
 init_n64:  // void()
     // init MI
     lui     t0, MI_BASE
-    lli     t1, $388                 // Enable PI, SI, VI interrupts
+    lli     t1, $595                 // Enable VI interrupts (and disable the rest)
     sw      t1, MI_MASK(t0)
 
     // init VI
@@ -127,7 +127,7 @@ install_exception_handler_loop:
 
     // enable interrupts
     lli     t0, $1401
-    mtc0    t0, CP0_STATUS                 // Set ie+im2+im4 (enable MI and 'reset' interrupts)
+    mtc0    t0, CP0_STATUS      // Set ie+im2+im4 (enable MI and 'reset' interrupts)
 
     jr      ra
     nop
@@ -180,16 +180,41 @@ handle_mi_interrupt:
     sd      ra, 0(sp)
     lui     t0, MI_BASE
     lw      t0, MI_INTERRUPT(t0)
-    andi    t1, t0, 8                      // VI interrupt flag
+    // currently not needed
+    // andi    t1, t0, 1
+    // addiu   t1, t1, -1
+    // bgezall t1, handle_sp_interrupt
+    // nop
+    // andi    t1, t0, 2
+    // addiu   t1, t1, -2
+    // bgezall t1, handle_si_interrupt
+    // nop
+    // andi    t1, t0, 4
+    // addiu   t1, t1, -4
+    // bgezall t1, handle_ai_interrupt
+    // nop
+    andi    t1, t0, 8
     addiu   t1, t1, -8
     bgezall t1, handle_vi_interrupt
-    nop                                    // TODO: handle remaining interrupts
+    nop
+    // andi    t1, t0, 16
+    // addiu   t1, t1, -16
+    // bgezall t1, handle_pi_interrupt
+    // nop
+    // andi    t1, t0, 32
+    // addiu   t1, t1, -32
+    // bgezall t1, handle_dp_interrupt
+    // nop
     ld      ra, 0(sp)
     jr      ra
     addiu   sp, sp, 8
-handle_system_reset_interrupt: // TODO
-    jr      ra
-    nop
+handle_system_reset_interrupt:
+handle_sp_interrupt:
+handle_si_interrupt:
+handle_ai_interrupt:
+handle_pi_interrupt:
+handle_dp_interrupt:
+    break
 handle_vi_interrupt:
     addiu   sp, sp, -8
     sd      ra, 0(sp)
@@ -198,9 +223,8 @@ handle_vi_interrupt:
     sb      t1, 0(t0)
     lui     t0, VI_BASE
     lli     t1, VI_V_SYNC_LINE
-    sw      t1, VI_V_CURRENT(t0)
     jal     render
-    nop
+    sw      t1, VI_V_CURRENT(t0)
     ld      ra, 0(sp)
     j       poll_input
     addiu   sp, sp, 8
