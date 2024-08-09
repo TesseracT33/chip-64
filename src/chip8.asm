@@ -353,8 +353,8 @@ wait_joybus:                // TODO: how long to wait before reading result?
     lw      t1, $7c0(t0)
     lw      t2, $7c4(t0)
     la      t3, key
-    ld      t4, 0(key)
-    ld      t5, 8(key)
+    ld      t4, 0(t3)
+    ld      t5, 8(t3)
     andi    t6, t1, 1
     sb      t6, 0(t3)   // dR
     srl     t1, t1, 1
@@ -519,8 +519,9 @@ update_sound_timer:
     sb      t1, 0(t0)
 await_v_sync:
     la      t0, got_v_sync
+await_v_sync_loop:
     lb      t1, 0(t0)
-    beq     t1, zero, await_v_sync
+    beq     t1, zero, await_v_sync_loop
     nop
     sb      zero, 0(t0)
 check_stop_run:
