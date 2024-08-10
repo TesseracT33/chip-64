@@ -54,7 +54,7 @@ start:
     // Stop N64 from crashing (infinite NMI) five seconds after boot
     lui     t0, PIF_BASE
     lli     t1, 8
-    sw      t1, PIF_RAM+$3c(t0)
+    sw      t1, $7fc(t0)
 
     li      sp, RDRAM_STACK_ADDR
     jal     init_n64
@@ -357,7 +357,6 @@ await_si_dma_wr:
     beql    t3, zero, await_si_dma_wr
     nop
     sw      zero, SI_STATUS(t1)         // clear SI interrupt
-    sd      zero, 0(t0)
     sw      t0, SI_DRAM_ADDR(t1)
     sw      t2, SI_PIF_AD_RD64B(t1)     // trigger joybus protocol + SI DMA from PIF RAM to RDRAM
 await_si_dma_rd:
@@ -425,11 +424,11 @@ await_si_dma_rd:
     andi    t7, t7, $ff
     slt     t7, zero, t7
     sb      t7, 15(t3)   // X-axis
-    la      t6, is_awaiting_input
+    la      t6, is_awaiting_key_release
     lb      t6, 0(t6)
     beql    t6, zero, poll_input_end
     nop
-check_got_input:
+check_got_key_release:
     addiu   sp, sp, -24
     sd      ra, 0(sp)
     move    a0, t4
@@ -439,27 +438,28 @@ check_got_input:
     jal     compare_inputs
     sd      t0, 16(sp)
     sltiu   t0, v0, 9
-    bne     t0, zero, got_input
+    bne     t0, zero, got_key_release
     ld      a0, 8(sp)
     jal     compare_inputs
     ld      a1, 16(sp)
     sltiu   t0, v0, 9
-    beq     t0, zero, check_got_input_end
-got_input:
-    la      t0, is_awaiting_input
+    beq     t0, zero, check_got_key_release_end
+got_key_release:
+    la      t0, is_awaiting_key_release
     sb      zero, 0(t0)
-    la      t0, key_gotten_on_input_await
+    la      t0, key_released_on_await
     sb      v0, 0(t0)
-check_got_input_end:
+check_got_key_release_end:
     ld      ra, 0(sp)
     addiu   sp, sp, 24
 poll_input_end:
     jr      ra
     nop
 
-// compares the LSBs in each byte of the dwords.
-// if lsb of new is 1 and lsb of old is 0, returns the index of that byte.
-// if none such lsb are found, returns -1.
+// Compares the LSBs in each byte of the dwords.
+// If lsb of new is 0 and lsb of old is 1, returns the index of that byte.
+// This signifies that a key was released.
+// If none such lsb are found, returns -1.
 compare_inputs:  // byte(dword old, dword new)
     beq     a0, a1, compare_inputs_no_match
     lli     v0, 0
@@ -467,7 +467,7 @@ compare_inputs:  // byte(dword old, dword new)
 compare_inputs_loop:
     andi    t1, a0, 1
     andi    t2, a1, 1
-    slt     t1, t1, t2
+    slt     t1, t2, t1
     bne     t1, zero, compare_inputs_end
     srl     a0, a0, 8
     srl     a1, a1, 8
@@ -890,15 +890,15 @@ opcode_exnn:  // void(hword opcode)
     lbu     a0, 0(a0)
 
     lli     t1, $9e
-    beq     t0, t1, opcode_Ex9E
+    beq     t0, t1, opcode_ex9e
     lli     t1, $a1
-    beql    t0, t1, opcode_ExA1
+    beql    t0, t1, opcode_exa1
     nop
     j       panic
     nop
 
 // Skip the next instruction if key[Vx] != 0
-opcode_Ex9E:  // void(byte key_vx)
+opcode_ex9e:  // void(byte key_vx)
     slt     t0, zero, a0
     sll     t0, t0, 1
     addu    pc, pc, t0
@@ -906,7 +906,7 @@ opcode_Ex9E:  // void(byte key_vx)
     andi    pc, pc, $fff
 
 // Skip the next instruction if key[Vx] == 0
-opcode_ExA1:  // void(byte key_vx)
+opcode_exa1:  // void(byte key_vx)
     slti    t0, a0, 1
     sll     t0, t0, 1
     addu    pc, pc, t0
@@ -947,17 +947,17 @@ opcode_fx07:  // void(byte x)
     jr      ra
     sb      t0, 0(a0)
 
-// LD Vx, K --  Wait for a key press, store the value of the key in Vx
+// LD Vx, K --  Wait for a key release, store the value of the key in Vx
 opcode_fx0a:  // void(byte x)
-    la      t0, is_awaiting_input
+    la      t0, is_awaiting_key_release
     lli     t1, 1
     sb      t1, 0(t0)
-opcode_fx0a_await_input:
+opcode_fx0a_await_key_release:
     lb      t1, 0(t0)
-    bnel    t1, zero, opcode_fx0a_await_input
+    bnel    t1, zero, opcode_fx0a_await_key_release
     nop
     addu    t0, a0, v
-    la      t1, key_gotten_on_input_await
+    la      t1, key_released_on_await
     lb      t1, 0(t1)
     jr      ra
     sb      t1, 0(t0)
@@ -1096,10 +1096,10 @@ sound_timer:
 needs_render:
     db 0
 
-is_awaiting_input:
+is_awaiting_key_release:
     db 0
 
-key_gotten_on_input_await:
+key_released_on_await:
     db 0
 
 align(8)
