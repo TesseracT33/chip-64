@@ -18,7 +18,7 @@ include "n64.inc"
 include "util.inc"
 
 include "n64_header.asm"
-insert "../lib/NUS-CIC-6102.bin"
+insert "../lib/ipl3_compat.bin"
 
 // Reserve some n64 registers for the chip-8 state
 constant pc = fp
@@ -698,13 +698,13 @@ opcode_8xyn:  // void(hword opcode)
     nop
 
 // LD Vx, Vy -- Set Vx = Vy
-opcode_8xy0:  // void(word &Vx, word &Vy)
+opcode_8xy0:  // void(byte* Vx, byte* Vy)
     lb      t0, 0(a1)
     jr      ra
     sb      t0, 0(a0)
 
 // OR Vx, Vy -- Set Vx = Vx OR Vy
-opcode_8xy1:  // void(word &Vx, word &Vy)
+opcode_8xy1:  // void(byte* Vx, byte* Vy)
     lb      t0, 0(a0)
     lb      t1, 0(a1)
     or      t0, t0, t1
@@ -712,7 +712,7 @@ opcode_8xy1:  // void(word &Vx, word &Vy)
     sb      t0, 0(a0)
 
 // AND Vx, Vy -- Set Vx = Vx AND Vy
-opcode_8xy2:  // void(word &Vx, word &Vy)
+opcode_8xy2:  // void(byte* Vx, byte* Vy)
     lb      t0, 0(a0)
     lb      t1, 0(a1)
     and     t0, t0, t1
@@ -720,7 +720,7 @@ opcode_8xy2:  // void(word &Vx, word &Vy)
     sb      t0, 0(a0)
 
 // XOR Vx, Vy -- Set Vx = Vx XOR Vy
-opcode_8xy3:  // void(word &Vx, word &Vy)
+opcode_8xy3:  // void(byte* Vx, byte* Vy)
     lb      t0, 0(a0)
     lb      t1, 0(a1)
     xor     t0, t0, t1
@@ -728,7 +728,7 @@ opcode_8xy3:  // void(word &Vx, word &Vy)
     sb      t0, 0(a0)
 
 // ADD Vx, Vy -- Set Vx = Vx + Vy, and set VF = carry
-opcode_8xy4:  // void(word &Vx, word &Vy)
+opcode_8xy4:  // void(byte* Vx, byte* Vy)
     lbu     t0, 0(a0)
     lbu     t1, 0(a1)
     addu    t0, t0, t1
@@ -738,7 +738,7 @@ opcode_8xy4:  // void(word &Vx, word &Vy)
     sb      t0, $f(v)
 
 // SUB Vx, Vy -- Set Vx = Vx - Vy, and set VF = NOT borrow
-opcode_8xy5:  // void(word &Vx, word &Vy)
+opcode_8xy5:  // void(byte* Vx, byte* Vy)
     lbu     t0, 0(a0)
     lbu     t1, 0(a1)
     subu    t0, t0, t1
@@ -749,7 +749,7 @@ opcode_8xy5:  // void(word &Vx, word &Vy)
     sb      t1, $f(v)
 
 // SHR Vx {, Vy} -- Set Vx = Vy SHR 1, and set VF to the previous LSB of Vy
-opcode_8xy6:  // void(word &Vx, word &Vy)
+opcode_8xy6:  // void(byte* Vx, byte* Vy)
     lbu     t0, 0(a1)
     andi    t1, t0, 1
     srl     t0, t0, 1
@@ -758,7 +758,7 @@ opcode_8xy6:  // void(word &Vx, word &Vy)
     sb      t1, $f(v)
 
 // SUBN Vx, Vy -- Set Vx = Vy - Vx, and set VF = NOT borrow
-opcode_8xy7:  // void(word &Vx, word &Vy)
+opcode_8xy7:  // void(byte* Vx, byte* Vy)
     lbu     t0, 0(a0)
     lbu     t1, 0(a1)
     subu    t0, t1, t0
@@ -769,7 +769,7 @@ opcode_8xy7:  // void(word &Vx, word &Vy)
     sb      t1, $f(v)
 
 // SHL Vx {, Vy} -- Set Vx = Vy SHL 1, and set VF to the previous MSB of Vy
-opcode_8xye:  // void(word &Vx, word &Vy)
+opcode_8xye:  // void(byte* Vx, byte* Vy)
     lbu     t0, 0(a1)
     srl     t1, t0, 7
     sll     t0, t0, 1
@@ -1157,10 +1157,10 @@ instr_jump_table_8000:
     dw opcode_8xye
     dw panic
 
-define ch8_rom_file = "../game.ch8"
-assert(file.exists({ch8_rom_file}))
-constant CH8_ROM_SIZE = file.size({ch8_rom_file})
+define CH8_ROM = "../game.ch8"
+assert(file.exists({CH8_ROM}))
+constant CH8_ROM_SIZE = file.size({CH8_ROM})
 assert(CH8_ROM_SIZE > 0 && CH8_ROM_SIZE <= MAX_CH8_ROM_SIZE)
 align(8)
 ch8_rom:
-    insert {ch8_rom_file}
+    insert {CH8_ROM}

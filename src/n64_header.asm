@@ -14,6 +14,7 @@ dw start // Boot Address Offset
 dw $1444 // Release Offset
 
 // COMPLEMENT CHECK & CHECKSUM
+// Note: if the libdragon IPL3 is used, these are unused
 dw $DC56E449 // CRC1: COMPLEMENT CHECK
 dw $7C5A11F8 // CRC2: CHECKSUM
 
