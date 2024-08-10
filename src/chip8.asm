@@ -85,7 +85,7 @@ init_n64:  // void()
     sw      t1, VI_V_INTR(t0)
     li      t1, $3e52239                   // NTSC standard?
     sw      t1, VI_BURST(t0)
-    lli     t1, $20d                 // NTSC, non-interlaced
+    lli     t1, $20d                       // NTSC, non-interlaced
     sw      t1, VI_V_SYNC(t0)
     lli     t1, $c15                       // NTSC standard?
     sw      t1, VI_H_SYNC(t0)
@@ -168,10 +168,10 @@ handle_interrupt_exception:
     addiu   t1, t1, -$400
     bgezall t1, handle_mi_interrupt
     nop
-    andi    t1, t0, $1000                  // read ip4
-    addiu   t1, t1, -$1000
-    bgezall t1, handle_system_reset_interrupt
-    nop
+    //andi    t1, t0, $1000                  // read ip4
+    //addiu   t1, t1, -$1000
+    //bgezall t1, handle_system_reset_interrupt
+    //nop
     ld      ra, 0(sp)
     j       exception_handler_180_exit
     addiu   sp, sp, 8
@@ -329,29 +329,50 @@ clear_framebuffer_loop:
     lb      t1, 0(t0)
 
 poll_input:  // void()
-    // write to start of PIF RAM bytes 0-2, 7
+    // write to start of PIF RAM bytes 0-2 and 7 by performing DMA from RDRAM
     // byte 0: command length (1)
     // byte 1: result length (4)
     // byte 2: command (1; Controller State)
     // byte 7: signal end of commands ($fe)
-    lui     t0, PIF_BASE
+    la      t0, si_dram_buffer | $a0000000     // use an uncacheable region in RDRAM for the PIF DMA to work
     li      t1, $01040100
-    sw      t1, $7c0(t0)
-    lli     t1, $fe
-    sw      t1, $7c4(t0)
+    dsll32  t1, t1, 0
+    ori     t1, t1, $fe
+    sd      t1, 0(t0)
     lli     t1, 1
-    sw      t1, $7fc(t0)    // trigger the joybus protocol
-    lli     t1, 10000
-wait_joybus:                // TODO: how long to wait before reading result?
-    bgez    t1, wait_joybus
-    addiu   t1, t1, -1
-    // read the result (bytes 3-6), being the controller state. best to stick to aligned word reads here (?)
+    sb      t1, $3f(t0)                 // set control byte to 1
+    lui     t1, SI_BASE
+await_si_not_busy:
+    lw      t2, SI_STATUS(t1)
+    andi    t2, t2, 3                   // check io + dma status
+    bnel    t2, zero, await_si_not_busy
+    nop
+    sw      zero, SI_STATUS(t1)         // clear SI interrupt
+    sw      t0, SI_DRAM_ADDR(t1)
+    lli     t2, $7c0
+    sw      t2, SI_PIF_AD_WR64B(t1)     // trigger SI DMA from RDRAM to PIF RAM
+await_si_dma_wr:
+    lw      t3, SI_STATUS(t1)
+    andi    t3, t3, $1000               // read SI interrupt
+    beql    t3, zero, await_si_dma_wr
+    nop
+    sw      zero, SI_STATUS(t1)         // clear SI interrupt
+    sd      zero, 0(t0)
+    sw      t0, SI_DRAM_ADDR(t1)
+    sw      t2, SI_PIF_AD_RD64B(t1)     // trigger joybus protocol + SI DMA from PIF RAM to RDRAM
+await_si_dma_rd:
+    lw      t3, SI_STATUS(t1)
+    andi    t3, t3, $1000               // read SI interrupt
+    beql    t3, zero, await_si_dma_rd
+    nop
+    sw      zero, SI_STATUS(t1)
+    // read the joybus result (bytes 3-6), representing the controller state.
     // byte 3: A B Z S dU dD dL dR
     // byte 4: RST - LT RT cU cD cL cR
     // byte 5: X-axis
     // byte 6: Y-axis
-    lw      t1, $7c0(t0)
-    lw      t2, $7c4(t0)
+    lw      t1, 0(t0)
+    lw      t2, 4(t0)
     la      t3, key
     ld      t4, 0(t3)
     ld      t5, 8(t3)
@@ -1080,6 +1101,10 @@ is_awaiting_input:
 
 key_gotten_on_input_await:
     db 0
+
+align(8)
+si_dram_buffer:
+    db_array(64)
 
 align(8)
 fontset:

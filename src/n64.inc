@@ -50,6 +50,12 @@ constant PI_STATUS = $10
 constant PIF_BASE = $bfc0
 constant PIF_RAM = $7c0
 
+constant SI_BASE = $a480
+constant SI_DRAM_ADDR = $0
+constant SI_PIF_AD_RD64B = $4
+constant SI_PIF_AD_WR64B = $10
+constant SI_STATUS = $18
+
 constant VI_BASE = $a440
 constant VI_CTRL = $0
 constant VI_ORIGIN = $4
