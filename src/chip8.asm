@@ -748,14 +748,14 @@ opcode_8xy5:  // void(word &Vx, word &Vy)
     jr      ra
     sb      t1, $f(v)
 
-// SHR Vx {, Vy} -- Set VF to the LSB of Vy, and set Vx = Vy SHR 1
+// SHR Vx {, Vy} -- Set Vx = Vy SHR 1, and set VF to the previous LSB of Vy
 opcode_8xy6:  // void(word &Vx, word &Vy)
     lbu     t0, 0(a1)
     andi    t1, t0, 1
-    sb      t1, $f(v)
     srl     t0, t0, 1
-    jr      ra
     sb      t0, 0(a0)
+    jr      ra
+    sb      t1, $f(v)
 
 // SUBN Vx, Vy -- Set Vx = Vy - Vx, and set VF = NOT borrow
 opcode_8xy7:  // void(word &Vx, word &Vy)
@@ -768,14 +768,14 @@ opcode_8xy7:  // void(word &Vx, word &Vy)
     jr      ra
     sb      t1, $f(v)
 
-// SHL Vx {, Vy} -- Set VF to the MSB of Vy, and set Vx = Vy SHL 1. 
-opcode_8xyE:  // void(word &Vx, word &Vy)
+// SHL Vx {, Vy} -- Set Vx = Vy SHL 1, and set VF to the previous MSB of Vy
+opcode_8xye:  // void(word &Vx, word &Vy)
     lbu     t0, 0(a1)
     srl     t1, t0, 7
-    sb      t1, $f(v)
     sll     t0, t0, 1
-    jr      ra
     sb      t0, 0(a0)
+    jr      ra
+    sb      t1, $f(v)
 
 // Skip the next instruction if Vx != Vy
 opcode_9xy0:  // void(hword opcode)
@@ -1154,7 +1154,7 @@ instr_jump_table_8000:
     dw panic
     dw panic
     dw panic
-    dw opcode_8xyE
+    dw opcode_8xye
     dw panic
 
 define ch8_rom_file = "../game.ch8"
